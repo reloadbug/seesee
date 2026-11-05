@@ -397,13 +397,22 @@ void App::OnDecodedReady() {
         img->pixels.shrink_to_fit();
     }
 
-    // 淘汰过多的缓存
+    // 淘汰过多的缓存：条目数 + 字节预算双上限，且不淘汰当前正在显示的图
     const size_t kMaxEntries = 12;
-    while (cache_.size() > kMaxEntries) {
-        auto worst = cache_.begin();
+    const size_t kMaxBytes = 192ull * 1024 * 1024;
+    auto cacheBytes = [this] {
+        size_t total = 0;
+        for (const auto& kv : cache_)
+            total += (size_t)kv.second.decW * (size_t)kv.second.decH * 4u;
+        return total;
+    };
+    while (cache_.size() > 1 && (cache_.size() > kMaxEntries || cacheBytes() > kMaxBytes)) {
+        auto worst = cache_.end();
         for (auto it = cache_.begin(); it != cache_.end(); ++it) {
-            if (it->second.lastUse < worst->second.lastUse) worst = it;
+            if ((it->first >> 2) == (uint64_t)curIndex_) continue;  // 正在显示，保留
+            if (worst == cache_.end() || it->second.lastUse < worst->second.lastUse) worst = it;
         }
+        if (worst == cache_.end()) break;
         cache_.erase(worst);
     }
 
