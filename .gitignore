@@ -5,7 +5,7 @@
 *.pdb
 *.ilk
 
-# 运行期/调试产物
+# 运行/调试产物
 seesee-bench.txt
 shot.png
 shot-err*.txt
@@ -18,7 +18,8 @@ see-reg.log
 # 工具的一次性编译产物
 /tools/**/*.exe
 /tools/**/*.obj
-# �����������ͼ��--shot ���
+
+# 测试样本与截图（--shot 产物）
 tools/samples/
 shot*.png
 live.png
