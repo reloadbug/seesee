@@ -28,6 +28,13 @@ enum Cmd : int {
     kSettings,
     kUiScaleUp,
     kUiScaleDown,
+    kCopyImage,
+    kCopyFile,
+    kCutFile,
+    kCopyPath,
+    kReveal,
+    kEdit,
+    kDelete,
     kCount
 };
 

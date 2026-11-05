@@ -1,10 +1,11 @@
-// seesee / 看看 — 主窗口与渲染实现
+﻿// seesee / 看看 — 主窗口与渲染实现
 #include "app.h"
 #include "assoc.h"
 
 #include <d2d1helper.h>
 #include <dwmapi.h>
 #include <shellapi.h>
+#include <shlobj.h>
 #include <shobjidl.h>
 #include <windowsx.h>
 #include <wincodec.h>
@@ -12,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <cwchar>
 #include <cwctype>
 
@@ -367,26 +369,7 @@ void App::RunCommand(int cmd) {
             break;
         case keys::kFullscreen: ToggleFullscreen(); break;
         case keys::kOpen: ShowOpenDialog(); break;
-        case keys::kDefaultApp: {
-            std::wstring regFile;
-            if (assoc::Register(&regFile)) {
-                assoc::OpenDefaultAppsSettings();
-                ShowToast(i18n::T(i18n::kSetDefaultDone));
-            } else if (!regFile.empty()) {
-                ShowToast(i18n::T(i18n::kSetDefaultFailed));
-                std::wstring text =
-                    i18n::IsChinese()
-                        ? L"注册表写入被拒绝（可能被安全软件拦截）。\n\n已生成关联文件，双击导入即可完成关联：\n"
-                        : L"Registry write was refused (a security tool may be blocking it).\n\nA .reg file was created — double-click it to finish:\n";
-                text += regFile;
-                MessageBoxW(hwnd_, text.c_str(), i18n::T(i18n::kAppTitle),
-                            MB_OK | MB_ICONINFORMATION);
-            } else {
-                MessageBoxW(hwnd_, i18n::T(i18n::kSetDefaultFailed), i18n::T(i18n::kAppTitle),
-                            MB_OK | MB_ICONERROR);
-            }
-            break;
-        }
+        case keys::kDefaultApp: RegisterAsDefault(); break;
         case keys::kStrip: {
             stripVisible_ = !stripVisible_;
             Settings& cfg = Settings::Get();
@@ -398,8 +381,328 @@ void App::RunCommand(int cmd) {
         case keys::kSettings: ToggleSettings(); break;
         case keys::kUiScaleUp: SetUiScale(Settings::Get().uiScale * 1.1f); break;
         case keys::kUiScaleDown: SetUiScale(Settings::Get().uiScale / 1.1f); break;
+        case keys::kCopyImage:
+            ShowToast(i18n::T(CopyImageToClipboard() ? i18n::kCopiedImage : i18n::kOpFailed));
+            break;
+        case keys::kCopyFile:
+            ShowToast(i18n::T(CopyFileToClipboard(false) ? i18n::kCopiedFile : i18n::kOpFailed));
+            break;
+        case keys::kCutFile:
+            ShowToast(i18n::T(CopyFileToClipboard(true) ? i18n::kCutToClipboard : i18n::kOpFailed));
+            break;
+        case keys::kCopyPath:
+            ShowToast(i18n::T(CopyPathToClipboard() ? i18n::kCopiedPath : i18n::kOpFailed));
+            break;
+        case keys::kReveal: RevealInExplorer(); break;
+        case keys::kEdit: EditWithDefaultApp(); break;
+        case keys::kDelete: DeleteCurrentFile(); break;
         default: break;
     }
+}
+
+// ------------------------------------------------------------- 剪贴板 / 文件操作
+
+static bool OpenClipboardWithRetry(HWND owner) {
+    for (int i = 0; i < 12; ++i) {
+        if (OpenClipboard(owner)) return true;
+        Sleep(8);
+    }
+    return false;
+}
+
+std::wstring App::CurrentPath() const {
+    if (loader_.FileCount() == 0) return std::wstring();
+    return loader_.PathAt(curIndex_);
+}
+
+bool App::HasImageFile() const { return !CurrentPath().empty(); }
+
+bool App::CopyPathToClipboard() {
+    const std::wstring path = CurrentPath();
+    if (path.empty()) return false;
+    const size_t bytes = (path.size() + 1) * sizeof(wchar_t);
+    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (!mem) return false;
+    void* p = GlobalLock(mem);
+    if (!p) {
+        GlobalFree(mem);
+        return false;
+    }
+    memcpy(p, path.c_str(), bytes);
+    GlobalUnlock(mem);
+    if (!OpenClipboardWithRetry(hwnd_)) {
+        GlobalFree(mem);
+        return false;
+    }
+    EmptyClipboard();
+    bool ok = SetClipboardData(CF_UNICODETEXT, mem) != nullptr;
+    CloseClipboard();
+    if (!ok) GlobalFree(mem);
+    return ok;
+}
+
+// 复制 / 剪切文件：CF_HDROP + Preferred DropEffect（剪切时资源管理器粘贴即移动）
+bool App::CopyFileToClipboard(bool cut) {
+    const std::wstring path = CurrentPath();
+    if (path.empty()) return false;
+
+    const size_t bytes = sizeof(DROPFILES) + (path.size() + 2) * sizeof(wchar_t);
+    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes);
+    if (!mem) return false;
+    DROPFILES* df = (DROPFILES*)GlobalLock(mem);
+    if (!df) {
+        GlobalFree(mem);
+        return false;
+    }
+    df->pFiles = sizeof(DROPFILES);
+    df->fWide = TRUE;
+    wchar_t* dst = (wchar_t*)((BYTE*)df + sizeof(DROPFILES));
+    memcpy(dst, path.c_str(), (path.size() + 1) * sizeof(wchar_t));
+    GlobalUnlock(mem);
+
+    HGLOBAL eff = nullptr;
+    const UINT effFmt = RegisterClipboardFormatW(L"Preferred DropEffect");
+    if (effFmt) {
+        eff = GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
+        if (eff) {
+            DWORD* p = (DWORD*)GlobalLock(eff);
+            if (p) {
+                *p = cut ? DROPEFFECT_MOVE : DROPEFFECT_COPY;
+                GlobalUnlock(eff);
+            }
+        }
+    }
+
+    if (!OpenClipboardWithRetry(hwnd_)) {
+        GlobalFree(mem);
+        if (eff) GlobalFree(eff);
+        return false;
+    }
+    EmptyClipboard();
+    bool ok = SetClipboardData(CF_HDROP, mem) != nullptr;
+    if (ok) mem = nullptr;  // 系统接管
+    if (eff && effFmt && SetClipboardData(effFmt, eff)) eff = nullptr;
+    CloseClipboard();
+    if (mem) GlobalFree(mem);
+    if (eff) GlobalFree(eff);
+    return ok;
+}
+
+// 复制图片像素：解码全尺寸 → 反乘 alpha → CF_DIBV5
+bool App::CopyImageToClipboard() {
+    const std::wstring path = CurrentPath();
+    if (path.empty()) return false;
+
+    HCURSOR prevCursor = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+    DecodedImage img;
+    Loader::Decode(curIndex_, path, kLevelFull, 0, 0, img);
+    SetCursor(prevCursor);
+    if (!img.ok || img.pixels.empty() || img.w == 0 || img.h == 0) return false;
+
+    const LONG w = (LONG)img.w;
+    const LONG h = (LONG)img.h;
+    const size_t stride = (size_t)w * 4;
+    const size_t imgBytes = stride * (size_t)h;
+    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, sizeof(BITMAPV5HEADER) + imgBytes);
+    if (!mem) return false;
+    BYTE* base = (BYTE*)GlobalLock(mem);
+    if (!base) {
+        GlobalFree(mem);
+        return false;
+    }
+
+    BITMAPV5HEADER* bi = (BITMAPV5HEADER*)base;
+    ZeroMemory(bi, sizeof(*bi));
+    bi->bV5Size = sizeof(BITMAPV5HEADER);
+    bi->bV5Width = w;
+    bi->bV5Height = h;  // 正数 = 自下而上，下面按行翻转
+    bi->bV5Planes = 1;
+    bi->bV5BitCount = 32;
+    bi->bV5Compression = BI_BITFIELDS;
+    bi->bV5SizeImage = (DWORD)imgBytes;
+    bi->bV5RedMask = 0x00FF0000;
+    bi->bV5GreenMask = 0x0000FF00;
+    bi->bV5BlueMask = 0x000000FF;
+    bi->bV5AlphaMask = 0xFF000000;
+    bi->bV5CSType = LCS_WINDOWS_COLOR_SPACE;
+
+    BYTE* dst = base + sizeof(BITMAPV5HEADER);
+    const uint8_t* src = img.pixels.data();
+    for (LONG y = 0; y < h; ++y) {
+        const uint8_t* srow = src + (size_t)y * stride;
+        BYTE* drow = dst + (size_t)(h - 1 - y) * stride;
+        for (LONG x = 0; x < w; ++x) {
+            const uint8_t a = srow[x * 4 + 3];
+            if (a == 0 || a == 255) {
+                memcpy(drow + x * 4, srow + x * 4, 4);
+            } else {  // 反乘 alpha，否则带透明度的图在别的软件里会偏暗
+                for (int k = 0; k < 3; ++k) {
+                    int v = srow[x * 4 + k] * 255 / a;
+                    drow[x * 4 + k] = (BYTE)(v > 255 ? 255 : v);
+                }
+                drow[x * 4 + 3] = a;
+            }
+        }
+    }
+    GlobalUnlock(mem);
+
+    if (!OpenClipboardWithRetry(hwnd_)) {
+        GlobalFree(mem);
+        return false;
+    }
+    EmptyClipboard();
+    bool ok = SetClipboardData(CF_DIBV5, mem) != nullptr;
+    CloseClipboard();
+    if (!ok) GlobalFree(mem);
+    return ok;
+}
+
+void App::RevealInExplorer() {
+    const std::wstring path = CurrentPath();
+    if (path.empty()) return;
+    const std::wstring args = L"/select,\"" + path + L"\"";
+    ShellExecuteW(hwnd_, L"open", L"explorer.exe", args.c_str(), nullptr, SW_SHOWNORMAL);
+}
+
+void App::EditWithDefaultApp() {
+    const std::wstring path = CurrentPath();
+    if (path.empty()) return;
+    HINSTANCE r = ShellExecuteW(hwnd_, L"edit", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    if ((INT_PTR)r <= 32) {  // 没有注册编辑器 → 退回"打开"
+        r = ShellExecuteW(hwnd_, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        if ((INT_PTR)r <= 32) ShowToast(i18n::T(i18n::kOpFailed));
+    }
+}
+
+void App::DeleteCurrentFile() {
+    const std::wstring path = CurrentPath();
+    if (path.empty()) return;
+    std::wstring list = path;
+    list.push_back(L'\0');
+    list.push_back(L'\0');  // pFrom 需要双 null 结尾
+
+    SHFILEOPSTRUCTW op{};
+    op.hwnd = hwnd_;
+    op.wFunc = FO_DELETE;
+    op.pFrom = list.c_str();
+    op.fFlags = FOF_ALLOWUNDO | FOF_WANTNUKEWARNING;  // 进回收站，确认交给系统
+    const int r = SHFileOperationW(&op);
+    if (r == 0 && !op.fAnyOperationsAborted) {
+        ShowToast(i18n::T(i18n::kDeletedFile));
+        RescanAfterDelete();
+    } else if (r != 0) {
+        ShowToast(i18n::T(i18n::kOpFailed));
+    }
+}
+
+void App::RescanAfterDelete() {
+    const std::wstring path = CurrentPath();
+    if (path.empty()) return;
+    const size_t slash = path.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) return;
+    const std::wstring dir = path.substr(0, slash);
+    const size_t want = curIndex_;
+    auto files = ScanImageFolder(dir);
+    if (files.empty()) {
+        loader_.SetFiles(std::vector<ImageFile>{});
+        cache_.clear();
+        thumbs_.clear();
+        curIndex_ = 0;
+        haveImage_ = false;
+        errorText_.clear();
+        UpdateCaption();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+    const size_t pick = want < files.size() ? want : files.size() - 1;
+    OpenPath(files[pick].path);
+}
+
+void App::ImportRegFile() {
+    if (lastRegFile_.empty()) {
+        ShowToast(i18n::T(i18n::kOpFailed));
+        return;
+    }
+    // 交给系统自己去合并（那个确认是系统行为，不是我们弹的窗口）
+    HINSTANCE r =
+        ShellExecuteW(hwnd_, L"open", lastRegFile_.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    if ((INT_PTR)r <= 32) ShowToast(i18n::T(i18n::kOpFailed));
+}
+
+void App::RegisterAsDefault() {
+    std::wstring regFile;
+    if (assoc::Register(&regFile)) {
+        lastRegFile_.clear();
+        regBlocked_ = false;
+        assoc::OpenDefaultAppsSettings();  // 直接引导到系统「默认应用」
+        ShowToast(i18n::T(i18n::kSetDefaultDone));
+        if (!settingsOpen_) ToggleSettings();
+        return;
+    }
+    // 被安全策略拦下：不弹自家对话框，改成面板里的「导入关联文件」引导
+    lastRegFile_ = regFile;
+    regBlocked_ = true;
+    if (!settingsOpen_) ToggleSettings();
+    settingsTab_ = 0;
+    setScroll_ = 0.f;
+    ShowToast(i18n::T(regFile.empty() ? i18n::kOpFailed : i18n::kRegBlockedHint));
+}
+
+int App::ShowContextMenu() {
+    HMENU m = CreatePopupMenu();
+    if (!m) return 0;
+
+    constexpr UINT kMenuIdSettings = 900;
+    constexpr UINT kMenuIdExit = 901;
+
+    const bool has = HasImageFile();
+    auto add = [&](keys::Cmd cmd, i18n::Str label) {
+        const UINT flags = MF_STRING | (has ? MF_ENABLED : MF_GRAYED);
+        AppendMenuW(m, flags, (UINT)cmd + 1, i18n::T(label));
+    };
+    auto sep = [&]() { AppendMenuW(m, MF_SEPARATOR, 0, nullptr); };
+
+    add(keys::kPrev, i18n::kCmdPrev);
+    add(keys::kNext, i18n::kCmdNext);
+    sep();
+    add(keys::kFit, i18n::kCmdFit);
+    add(keys::kActual, i18n::kCmdActual);
+    add(keys::kZoomIn, i18n::kCmdZoomIn);
+    add(keys::kZoomOut, i18n::kCmdZoomOut);
+    add(keys::kFullscreen, i18n::kCmdFullscreen);
+    sep();
+    add(keys::kCopyImage, i18n::kCmdCopyImage);
+    add(keys::kCopyFile, i18n::kCmdCopyFile);
+    add(keys::kCutFile, i18n::kCmdCutFile);
+    add(keys::kCopyPath, i18n::kCmdCopyPath);
+    sep();
+    add(keys::kReveal, i18n::kCmdReveal);
+    add(keys::kEdit, i18n::kCmdEdit);
+    add(keys::kDelete, i18n::kCmdDelete);
+    sep();
+    add(keys::kDefaultApp, i18n::kCmdDefaultApp);
+    AppendMenuW(m, MF_STRING, kMenuIdSettings, i18n::T(i18n::kMenuSettings));
+    sep();
+    AppendMenuW(m, MF_STRING, kMenuIdExit, i18n::T(i18n::kMenuExit));
+
+    POINT pt{};
+    GetCursorPos(&pt);
+    SetForegroundWindow(hwnd_);
+    const int id = (int)TrackPopupMenu(m,
+                                      TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y,
+                                      0, hwnd_, nullptr);
+    DestroyMenu(m);
+    if (id == 0) return 0;
+    if (id == (int)kMenuIdExit) {
+        PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+        return id;
+    }
+    if (id == (int)kMenuIdSettings) {
+        RunCommand((int)keys::kSettings);
+        return id;
+    }
+    RunCommand(id - 1);  // 菜单 id = 命令 + 1
+    return id;
 }
 
 void App::UpdateCaption() {
@@ -742,6 +1045,14 @@ LRESULT App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 hover_ = kBtnNone;
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
+            return 0;
+        }
+
+        case WM_CONTEXTMENU: {
+            // 右键菜单（也覆盖 Shift+F10 / 菜单键）
+            lastInputMs_ = NowMs();
+            if (chromeAlpha_ < 1.f) chromeAlpha_ = 1.f;
+            ShowContextMenu();
             return 0;
         }
 
@@ -1762,6 +2073,8 @@ void App::OnPanelClick(int id) {
         case kSetZoomIn: SetUiScale(cfg.uiScale * 1.1f); break;
         case kSetZoomReset: SetUiScale(1.0f); break;
         case kSetRegister: RunCommand((int)keys::kDefaultApp); break;
+        case kSetImportReg: ImportRegFile(); break;
+        case kSetOpenApps: assoc::OpenDefaultAppsSettings(); break;
         case kSetKeysReset:
             keys::ResetAll();
             captureCmd_ = -1;
@@ -1960,6 +2273,14 @@ void App::DrawSettingsPanel() {
 
         yy += 8 * s;
         wideButton(i18n::kSetDefaultApp, kSetRegister, true);
+        if (regBlocked_ && !lastRegFile_.empty()) {
+            // 被系统/安全软件拦下时不再弹自家对话框：改成面板里的两步引导
+            Text(i18n::T(i18n::kRegBlockedHint), x0, yy - 2 * s, cw, 30 * s, 10.5f * s,
+                 Brush(kColorText3));
+            yy += 28 * s;
+            wideButton(i18n::kImportRegFile, kSetImportReg, true);
+            wideButton(i18n::kOpenSystemSettings, kSetOpenApps, false);
+        }
         if (!toast_.empty() && NowMs() < toastUntil_) {
             Text(toast_, x0, yy - 4 * s, cw, 34 * s, 11 * s, Brush(kColorText3));
             yy += 26 * s;
@@ -2000,7 +2321,7 @@ void App::DrawSettingsPanel() {
             yy += h;
         }
     } else {
-        Text(std::wstring(i18n::T(i18n::kAppName)) + L" · " + i18n::T(i18n::kVersion) + L" 0.3.0",
+        Text(std::wstring(i18n::T(i18n::kAppName)) + L" · " + i18n::T(i18n::kVersion) + L" 0.3.1",
              x0, yy, cw, 28 * s, 14 * s, Brush(kColorText));
         yy += 30 * s;
         Text(i18n::T(i18n::kAboutTagline), x0, yy, cw, 22 * s, 12 * s, Brush(kColorText2));

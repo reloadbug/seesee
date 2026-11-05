@@ -14,6 +14,7 @@ const wchar_t* const kIds[kCount] = {
     L"Prev",   L"Next",   L"First",  L"Last",      L"ZoomIn",   L"ZoomOut", L"Fit",
     L"Actual", L"Fullscreen", L"Open", L"DefaultApp", L"Strip",  L"Settings",
     L"UiScaleUp", L"UiScaleDown",
+    L"CopyImage", L"CopyFile", L"CutFile", L"CopyPath", L"Reveal", L"Edit", L"Delete",
 };
 
 const i18n::Str kLabels[kCount] = {
@@ -21,6 +22,8 @@ const i18n::Str kLabels[kCount] = {
     i18n::kCmdZoomIn,   i18n::kCmdZoomOut,  i18n::kCmdFit,    i18n::kCmdActual,
     i18n::kCmdFullscreen, i18n::kCmdOpen,   i18n::kCmdDefaultApp, i18n::kCmdStrip,
     i18n::kCmdSettings, i18n::kCmdUiScaleUp, i18n::kCmdUiScaleDown,
+    i18n::kCmdCopyImage, i18n::kCmdCopyFile, i18n::kCmdCutFile, i18n::kCmdCopyPath,
+    i18n::kCmdReveal, i18n::kCmdEdit, i18n::kCmdDelete,
 };
 
 Chord Make(UINT vk, bool ctrl = false, bool shift = false, bool alt = false) {
@@ -116,6 +119,13 @@ std::vector<Chord> Defaults(Cmd c) {
         case kSettings: v = {Make(VK_OEM_COMMA, true)}; break;
         case kUiScaleUp: v = {Make(VK_OEM_PLUS, true, true)}; break;
         case kUiScaleDown: v = {Make(VK_OEM_MINUS, true, true)}; break;
+        case kCopyImage: v = {Make('C', true, true)}; break;
+        case kCopyFile: v = {Make('C', true)}; break;
+        case kCutFile: v = {Make('X', true)}; break;
+        case kCopyPath: v = {Make('C', true, false, true)}; break;
+        case kReveal: v = {Make('E', true, true)}; break;
+        case kEdit: v = {Make('E', true)}; break;
+        case kDelete: v = {Make(VK_DELETE)}; break;
         default: break;
     }
     return v;

@@ -69,6 +69,8 @@ private:
         kSetZoomIn,
         kSetZoomReset,
         kSetRegister,
+        kSetImportReg,
+        kSetOpenApps,
         kSetKeysReset,
         kSetKeyBase = 400,  // kSetKeyBase + keys::Cmd
 
@@ -171,6 +173,20 @@ private:
     void TryCaptureKey(UINT vk);      // 捕获态下的按键分发（Esc/Delete/修饰键）
     void ShowToast(const std::wstring& text);
 
+    // 右键菜单 + 图片操作
+    int ShowContextMenu();            // 返回被选中的菜单命令（0 = 未选）
+    bool HasImageFile() const;
+    std::wstring CurrentPath() const;
+    bool CopyImageToClipboard();
+    bool CopyFileToClipboard(bool cut);
+    bool CopyPathToClipboard();
+    void RevealInExplorer();
+    void EditWithDefaultApp();
+    void DeleteCurrentFile();         // 移到回收站
+    void RescanAfterDelete();         // 删完重扫目录、停在相邻位置
+    void ImportRegFile();             // 直接调系统合并 .reg（系统自己确认）
+    void RegisterAsDefault();         // 注册 + 引导（不弹自家对话框）
+
     // ---- 状态 ----
     HINSTANCE hinst_ = nullptr;
     HWND hwnd_ = nullptr;
@@ -239,6 +255,8 @@ private:
     int pendingPanel_ = -1;            // --panel：截图前自动打开面板
     bool pendingCapture_ = false;
     int pendingLang_ = -1;             // --lang：截图用的临时语言覆盖
+    std::wstring lastRegFile_;         // 注册被拒时生成的 .reg（面板里给"导入"入口）
+    bool regBlocked_ = false;          // 上次注册是否被系统拦下
 
     std::vector<Hit> hits_;
 

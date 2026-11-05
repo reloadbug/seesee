@@ -181,7 +181,7 @@
 | 滚动条 | 宽 3，`#FFFFFF` @0.16，仅内容溢出时出现 |
 
 - **通用**：语言三选一（跟随系统 / 中文 / English）、界面缩放 `[−] 100% [+] [重置]`、开关（底部胶片条 / 控件自动隐藏 / 滚轮翻页 / 小图放大到窗口）、「设为默认看图工具」主按钮。
-- **快捷键**：15 行「命令名 + 键帽」，点键帽进入捕获态（面板独占键盘，显示「请按新按键…」）；`Esc` 取消、`Delete`/`Backspace` 解绑；新键与其它命令冲突时自动解绑对方并用 toast（4 s）提示「该键已用于「上一张」」。页脚固定显示 `Esc`/`Delete` 提示与「恢复默认」，不随列表滚动。
+- **快捷键**：22 行「命令名 + 键帽」，点键帽进入捕获态（面板独占键盘，显示「请按新按键…」）；`Esc` 取消、`Delete`/`Backspace` 解绑；新键与其它命令冲突时自动解绑对方并用 toast（4 s）提示「该键已用于「上一张」」。页脚固定显示 `Esc`/`Delete` 提示与「恢复默认」，不随列表滚动。
 - **关于**：`看看 · 版本`、一句话定位、技术栈、性能实测、仓库地址（accent 色）、MIT。
 - 切换语言/开关即时生效并写 `settings.ini`，无需重启。
 
@@ -191,3 +191,18 @@
 - 「跟随系统」用 `GetUserDefaultUILanguage()` + `PRIMARYLANGID()==LANG_CHINESE` 判定；选择存 `settings.ini` 的 `language=0|1|2`。
 - 中文优先用系统字体 `Microsoft YaHei UI`／`Segoe UI Variable Text`，英文同为该族（西文形），不混排。
 - 新增语言只需在 `kTable[]` 里加一列（`enum` 加维度即可），目前支持 简体中文 / English 两种。
+
+## 12. 右键菜单（v0.3.1）
+
+- 触发：客户区右键 / `Shift+F10` / 菜单键（统一走 `WM_CONTEXTMENU`）。用系统原生 `TrackPopupMenu`（深色外观由系统跟随），不自绘，保证键盘导航与可访问性。
+- id 约定：`id = keys::Cmd + 1`（菜单项与快捷键共用同一套命令）；另有两个专用 id：`900` = 打开设置、`901` = 退出。
+- 分组与顺序：`上一张 / 下一张` ｜ `适应窗口 / 原始大小 / 放大 / 缩小 / 全屏` ｜ `复制图片 / 复制文件 / 剪切文件 / 复制路径` ｜ `在资源管理器中显示 / 用默认程序编辑 / 移到回收站` ｜ `设为默认看图工具 / 设置…` ｜ `退出`。
+- 无图时所有依赖当前文件的项 `MF_GRAYED`。
+- 实现要点：复制图片 = 全尺寸解码 → 反乘 alpha → `CF_DIBV5`（带 alpha mask）；复制 / 剪切文件 = `CF_HDROP` + `Preferred DropEffect`（剪切后到资源管理器粘贴即移动）；移到回收站 = `SHFileOperationW(FOF_ALLOWUNDO | FOF_WANTNUKEWARNING)`，确认交给系统，删完自动重扫目录并停在相邻位置。
+
+## 13. 关联引导（不弹自家对话框，v0.3.1）
+
+- 原则：`Ctrl+D`、面板主按钮、菜单项统一走 `App::RegisterAsDefault()`，**不再使用 `MessageBox`**。
+- 成功：写 HKCU（ProgID + OpenWithProgids + Capabilities + RegisteredApplications）→ `SHChangeNotify` → 直接打开系统「默认应用」（`ms-settings:defaultapps?registeredAppUser=SeeSee`），toast「已注册，请在系统「默认应用」里确认」，并自动打开设置面板。
+- 失败（注册表被安全软件拦截）：把生成的 `seesee-assoc.reg` 路径记入 `lastRegFile_`、`regBlocked_ = true`，打开设置面板→通用页，在「设为默认看图工具」下方追加：引导文案（`kRegBlockedHint`）+ 「导入关联文件」主按钮（`ShellExecuteW` 打开 .reg，合并确认是系统行为）+ 「打开系统设置」次按钮。
+- 相关文案：`kRegBlockedHint` / `kImportRegFile` / `kOpenSystemSettings` / `kSetDefaultDone`。

@@ -65,6 +65,28 @@ enum Str : int {
     kCmdUiScaleUp,
     kCmdUiScaleDown,
 
+    // 图片操作（右键菜单 + 快捷键）
+    kCmdCopyImage,
+    kCmdCopyFile,
+    kCmdCutFile,
+    kCmdCopyPath,
+    kCmdReveal,
+    kCmdEdit,
+    kCmdDelete,
+
+    // 关联引导 / 操作结果
+    kRegBlockedHint,
+    kImportRegFile,
+    kOpenSystemSettings,
+    kCopiedImage,
+    kCopiedFile,
+    kCutToClipboard,
+    kCopiedPath,
+    kOpFailed,
+    kDeletedFile,
+    kMenuSettings,
+    kMenuExit,
+
     kCount
 };
 
