@@ -865,6 +865,27 @@ LRESULT App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
 
+        // Alt+X 走 WM_SYSKEYDOWN：捕获态要用它绑 Alt 组合，平时命中绑定就执行
+        case WM_SYSKEYDOWN: {
+            lastInputMs_ = NowMs();
+            if (chromeAlpha_ < 1.f) chromeAlpha_ = 1.f;
+            const UINT vk = (UINT)wp;
+            if (captureCmd_ >= 0) {
+                TryCaptureKey(vk);
+                return 0;
+            }
+            if (vk != VK_MENU) {
+                keys::Cmd cmd = keys::Match(vk, (GetKeyState(VK_CONTROL) & 0x8000) != 0,
+                                            (GetKeyState(VK_SHIFT) & 0x8000) != 0, true);
+                if (cmd != keys::kCount) {
+                    RunCommand((int)cmd);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+            break;
+        }
+
         case WM_KEYDOWN: {
             lastInputMs_ = NowMs();
             if (chromeAlpha_ < 1.f) chromeAlpha_ = 1.f;
@@ -872,24 +893,7 @@ LRESULT App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             // 设置面板正在等新键位：这次按键只用于绑定
             if (captureCmd_ >= 0) {
-                if (vk == VK_ESCAPE) {
-                    captureCmd_ = -1;
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                    return 0;
-                }
-                if (vk == VK_DELETE || vk == VK_BACK) {
-                    keys::Clear((keys::Cmd)captureCmd_);
-                    captureCmd_ = -1;
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                    return 0;
-                }
-                if (vk == VK_CONTROL || vk == VK_SHIFT || vk == VK_MENU || vk == VK_LWIN ||
-                    vk == VK_RWIN || vk == VK_CAPITAL) {
-                    return 0;  // 纯修饰键不算一次绑定
-                }
-                CaptureKey(vk, (GetKeyState(VK_CONTROL) & 0x8000) != 0,
-                           (GetKeyState(VK_SHIFT) & 0x8000) != 0,
-                           (GetKeyState(VK_MENU) & 0x8000) != 0);
+                TryCaptureKey(vk);
                 return 0;
             }
 
@@ -1647,6 +1651,28 @@ void App::ShowToast(const std::wstring& text) {
     toast_ = text;
     toastUntil_ = NowMs() + 4000.0;
     InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+// 捕获态下把一次按键转成绑定：Esc 取消、Delete/Backspace 解绑、纯修饰键忽略
+void App::TryCaptureKey(UINT vk) {
+    if (captureCmd_ < 0) return;
+    if (vk == VK_ESCAPE) {
+        captureCmd_ = -1;
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+    if (vk == VK_DELETE || vk == VK_BACK) {
+        keys::Clear((keys::Cmd)captureCmd_);
+        captureCmd_ = -1;
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+    if (vk == VK_CONTROL || vk == VK_SHIFT || vk == VK_MENU || vk == VK_LWIN || vk == VK_RWIN ||
+        vk == VK_CAPITAL) {
+        return;  // 纯修饰键不算一次绑定
+    }
+    CaptureKey(vk, (GetKeyState(VK_CONTROL) & 0x8000) != 0,
+               (GetKeyState(VK_SHIFT) & 0x8000) != 0, (GetKeyState(VK_MENU) & 0x8000) != 0);
 }
 
 void App::CaptureKey(UINT vk, bool ctrl, bool shift, bool alt) {

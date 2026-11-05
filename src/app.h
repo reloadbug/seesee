@@ -168,6 +168,7 @@ private:
     void SetLanguage(int v);
     void RunCommand(int cmd);          // 执行 keys::Cmd（键位与面板共用）
     void CaptureKey(UINT vk, bool ctrl, bool shift, bool alt);  // 设置面板里捕获新键位
+    void TryCaptureKey(UINT vk);      // 捕获态下的按键分发（Esc/Delete/修饰键）
     void ShowToast(const std::wstring& text);
 
     // ---- 状态 ----
