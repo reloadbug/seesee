@@ -1,0 +1,20 @@
+# 构建产物
+/build/
+/bin/
+*.obj
+*.pdb
+*.ilk
+
+# 运行期/调试产物
+seesee-bench.txt
+shot.png
+shot-err*.txt
+bo.txt
+be.txt
+out.txt
+err.txt
+see-reg.log
+
+# 工具的一次性编译产物
+/tools/**/*.exe
+/tools/**/*.obj

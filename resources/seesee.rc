@@ -1,0 +1,36 @@
+﻿// 看看 SeeSee — 资源
+#pragma code_page(65001)
+
+#include <windows.h>
+
+1 RT_MANIFEST "seesee.manifest"
+APPICON ICON "seesee.ico"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 0,1,0,0
+PRODUCTVERSION 0,1,0,0
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS 0x40004L
+FILETYPE 0x1L
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "CompanyName", "SeeSee"
+            VALUE "FileDescription", "SeeSee - fast image viewer"
+            VALUE "FileVersion", "0.1.0.0"
+            VALUE "InternalName", "seesee"
+            VALUE "LegalCopyright", "Copyright (C) 2026"
+            VALUE "OriginalFilename", "seesee.exe"
+            VALUE "ProductName", "SeeSee"
+            VALUE "ProductVersion", "0.1.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200
+    END
+END
