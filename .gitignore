@@ -18,3 +18,7 @@ see-reg.log
 # å·¥å…·çš„ä¸€æ¬¡æ€§ç¼–è¯‘äº§ç‰©
 /tools/**/*.exe
 /tools/**/*.obj
+# ²âÊÔÑù±¾Óë½ØÍ¼£¨--shot ²úÎï£©
+tools/samples/
+shot*.png
+live.png

@@ -388,6 +388,11 @@ void Loader::Decode(uint32_t index, const std::wstring& path, int level, uint32_
         double sy = double(fitH) / double(sh);
         scale = sx < sy ? sx : sy;
         if (scale > 1.0) scale = 1.0;
+    } else if (level == kLevelThumb) {
+        // 缩略图：长边收到 kThumbLongSide，避免整图解码
+        double longest = double(sw > sh ? sw : sh);
+        if (longest > 0) scale = double(kThumbLongSide) / longest;
+        if (scale > 1.0) scale = 1.0;
     }
     UINT dw = (UINT)std::lround(sw * scale);
     UINT dh = (UINT)std::lround(sh * scale);

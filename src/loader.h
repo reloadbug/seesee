@@ -34,8 +34,11 @@ bool IsSupportedImageFile(const std::wstring& name);
 // 扫描目录，自然排序（IMG_2 < IMG_10），失败返回空
 std::vector<ImageFile> ScanImageFolder(const std::wstring& dirPath);
 
-// 解码档位：适应窗口 / 原始分辨率
-enum DecodeLevel : int { kLevelFit = 0, kLevelFull = 1, kLevelCount = 2 };
+// 解码档位：适应窗口 / 原始分辨率 / 胶片条缩略图
+enum DecodeLevel : int { kLevelFit = 0, kLevelFull = 1, kLevelThumb = 2, kLevelCount = 3 };
+
+// 缩略图解码的长边目标（像素）；实际会用 DCT 最接近的档位
+constexpr int kThumbLongSide = 256;
 
 struct DecodedImage {
     uint32_t index = 0;

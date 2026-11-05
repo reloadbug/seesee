@@ -24,6 +24,7 @@ namespace {
 
 const wchar_t* kClassName = L"SeeSeeMainWindow";
 const UINT WM_APP_DECODED = WM_APP + 1;
+const UINT_PTR kIdleTimerId = 1;
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -196,6 +197,26 @@ bool App::CreateMainWindow(HINSTANCE hInst) {
                             hInst, this);
     if (!hwnd_) return false;
 
+    // DPI：必须在这里取一次真实 DPI，否则 96dpi 尺寸会直接画在 4K 高分屏上（字小到看不清）
+    {
+        UINT dpi = 0;
+        if (auto pGetDpiForWindow = reinterpret_cast<UINT(WINAPI*)(HWND)>(
+                GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"))) {
+            dpi = pGetDpiForWindow(hwnd_);
+        }
+        if (dpi == 0) {
+            HDC dc = GetDC(hwnd_);
+            if (dc) {
+                dpi = (UINT)GetDeviceCaps(dc, LOGPIXELSX);
+                ReleaseDC(hwnd_, dc);
+            }
+        }
+        if (dpi == 0) dpi = 96;
+        monitorScale_ = (float)dpi / 96.0f;
+    }
+    stripVisible_ = Settings::Get().filmstrip;
+    ApplyUiScale();
+
     BOOL dark = TRUE;
     DwmSetWindowAttribute(hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
     int corner = 2;  // DWMWCP_ROUND
@@ -211,6 +232,8 @@ void App::ShowMainWindow() {
     if (!hwnd_) return;
     ShowWindow(hwnd_, SW_SHOW);
     UpdateWindow(hwnd_);
+    lastInputMs_ = NowMs();
+    idleTimer_ = (SetTimer(hwnd_, kIdleTimerId, 120, nullptr) != 0);
 }
 
 void App::Shutdown() {
@@ -274,6 +297,8 @@ bool App::OpenPath(const std::wstring& path, bool keepView) {
 
     loader_.SetFiles(std::move(files));
     benchFileCount_ = (uint32_t)loader_.FileCount();
+    thumbs_.clear();  // 换目录了，旧缩略图作废
+    stripScroll_ = 0.f;
     if (!keepView) {
         cache_.clear();
         zoomMode_ = ZoomMode::Fit;
@@ -331,6 +356,13 @@ void App::UpdateRequests() {
             wanted.push_back(curIndex_ + i);
         if ((int64_t)curIndex_ - i >= 0) wanted.push_back(curIndex_ - i);
     }
+    // 胶片条可见时，把当前附近的索引也纳入"想要"，否则缩略图请求会被丢弃
+    if (StripHeight() > 0.f) {
+        int64_t lo = (int64_t)curIndex_ - 40, hi = (int64_t)curIndex_ + 40;
+        if (lo < 0) lo = 0;
+        if (hi > (int64_t)loader_.FileCount() - 1) hi = (int64_t)loader_.FileCount() - 1;
+        for (int64_t i = lo; i <= hi; ++i) wanted.push_back((uint32_t)i);
+    }
     loader_.SetWanted(wanted);
 
     loader_.Request(curIndex_, level, 0);
@@ -342,6 +374,9 @@ void App::UpdateRequests() {
     for (int i = 1; i <= cfg.preloadPrev; ++i) {
         if ((int64_t)curIndex_ - i >= 0) loader_.Request(curIndex_ - i, kLevelFit, 1);
     }
+
+    RequestThumbs();
+    SyncStripScroll();
 }
 
 void App::OnDecodedReady() {
@@ -353,6 +388,10 @@ void App::OnDecodedReady() {
     for (auto& img : items) {
         if (!img) continue;
         if (!img->ok) {
+            if (img->level == kLevelThumb) {
+                thumbs_[img->index] = nullptr;  // 标记已尝试，避免反复重试
+                continue;
+            }
             if (img->index == curIndex_) {
                 errorText_ = img->error.empty() ? L"无法打开此图片" : img->error;
                 loading_ = false;
@@ -373,6 +412,15 @@ void App::OnDecodedReady() {
             &bmp);
         double uploadMs = NowMs() - tUp0;
         if (FAILED(hr) || !bmp) continue;
+
+        // 缩略图走独立表，不进大图缓存
+        if (img->level == kLevelThumb) {
+            thumbs_[img->index] = bmp;
+            img->pixels.clear();
+            img->pixels.shrink_to_fit();
+            if (stripVisible_) InvalidateRect(hwnd_, nullptr, FALSE);
+            continue;
+        }
 
         CacheEntry e;
         e.bmp = bmp;
@@ -426,6 +474,8 @@ RECT App::AreaRect() const {
     if (!hwnd_) return rc;
     GetClientRect(hwnd_, &rc);
     rc.top += (LONG)titleH_;
+    rc.bottom -= (LONG)StripHeight();
+    if (rc.bottom < rc.top + 40) rc.bottom = rc.top + 40;
     return rc;
 }
 
@@ -483,7 +533,7 @@ void App::ToggleFullscreen() {
         SetWindowLongW(hwnd_, GWL_STYLE, savedStyle_);
         SetWindowPos(hwnd_, nullptr, savedRect_.left, savedRect_.top, savedRect_.right - savedRect_.left,
                      savedRect_.bottom - savedRect_.top, SWP_FRAMECHANGED | SWP_NOZORDER);
-        titleH_ = std::round(34.f * dpiScale_);
+        ApplyUiScale();
     }
     UpdateRequests();
     InvalidateRect(hwnd_, nullptr, FALSE);
@@ -600,8 +650,8 @@ LRESULT App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         case WM_DPICHANGED: {
-            dpiScale_ = (float)HIWORD(wp) / 96.0f;
-            titleH_ = std::round(34.f * dpiScale_);
+            monitorScale_ = (float)HIWORD(wp) / 96.0f;
+            ApplyUiScale();
             RECT* r = reinterpret_cast<RECT*>(lp);
             SetWindowPos(hwnd, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top,
                          SWP_NOZORDER | SWP_NOACTIVATE);
@@ -621,7 +671,16 @@ LRESULT App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             OnDecodedReady();
             return 0;
 
+        case WM_TIMER:
+            if (wp == kIdleTimerId) {
+                UpdateIdle();
+                return 0;
+            }
+            break;
+
         case WM_MOUSEMOVE: {
+            lastInputMs_ = NowMs();
+            if (chromeAlpha_ < 1.f) chromeAlpha_ = 1.f;
             POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
             if (panning_) {
                 POINT cur{pt.x, pt.y};
@@ -651,6 +710,8 @@ LRESULT App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         case WM_LBUTTONDOWN: {
             POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            lastInputMs_ = NowMs();
+            if (chromeAlpha_ < 1.f) chromeAlpha_ = 1.f;
             SetFocus(hwnd);
             int id = HitTest(pt);
             if (id != kBtnNone) {
@@ -679,6 +740,11 @@ LRESULT App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             int was = pressed_;
             pressed_ = kBtnNone;
             if (id != kBtnNone && id == was) {
+                if (id >= kBtnThumbBase) {
+                    GoTo((int64_t)(id - kBtnThumbBase));
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
                 switch (id) {
                     case kBtnPrev:
                     case kBtnArrowLeft: PrevImage(); break;
@@ -746,6 +812,8 @@ LRESULT App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         case WM_KEYDOWN: {
+            lastInputMs_ = NowMs();
+            if (chromeAlpha_ < 1.f) chromeAlpha_ = 1.f;
             switch (wp) {
                 case VK_RIGHT:
                 case VK_DOWN:
@@ -767,14 +835,31 @@ LRESULT App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     return 0;
                 case VK_OEM_PLUS:
                 case VK_ADD: {
+                    if ((GetKeyState(VK_CONTROL) & 0x8000) && (GetKeyState(VK_SHIFT) & 0x8000)) {
+                        SetUiScale(Settings::Get().uiScale * 1.1f);  // 只放大界面，不动图片缩放
+                        return 0;
+                    }
                     SetZoomAnchored(CurrentZoom() * 1.25, AreaCenter());
                     UpdateRequests();
                     return 0;
                 }
                 case VK_OEM_MINUS:
                 case VK_SUBTRACT: {
+                    if ((GetKeyState(VK_CONTROL) & 0x8000) && (GetKeyState(VK_SHIFT) & 0x8000)) {
+                        SetUiScale(Settings::Get().uiScale / 1.1f);
+                        return 0;
+                    }
                     SetZoomAnchored(CurrentZoom() / 1.25, AreaCenter());
                     UpdateRequests();
+                    return 0;
+                }
+                case 'T': {
+                    stripVisible_ = !stripVisible_;
+                    Settings& cfg = Settings::Get();
+                    cfg.filmstrip = stripVisible_;
+                    cfg.Save();
+                    UpdateRequests();
+                    InvalidateRect(hwnd, nullptr, FALSE);
                     return 0;
                 }
                 case '0': ResetViewToFit(); UpdateRequests(); return 0;
@@ -826,6 +911,10 @@ LRESULT App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         case WM_DESTROY:
             loader_.Stop();
+            if (idleTimer_) {
+                KillTimer(hwnd, kIdleTimerId);
+                idleTimer_ = false;
+            }
             DiscardDevice();
             if (memDC_) {
                 DeleteDC(memDC_);
@@ -884,6 +973,8 @@ bool App::EnsureBackBuffer(int w, int h) {
 
 void App::DiscardDevice() {
     cache_.clear();
+    thumbs_.clear();
+    layer_.Reset();
     brushes_.clear();
     if (dib_) {
         SelectObject(memDC_, nullptr);
@@ -1024,14 +1115,14 @@ void App::DrawImageLayer() {
         ID2D1SolidColorBrush* br = Brush(D2D1::ColorF(0x6B7480, 0.9f));
         if (!errorText_.empty()) {
             Text(errorText_, (float)a.left, (float)(a.top + a.bottom) / 2 - 20,
-                 (float)(a.right - a.left), 40, 14 * dpiScale_, Brush(kColorText2), 2);
+                 (float)(a.right - a.left), 42, 15.5f * dpiScale_, Brush(kColorText2), 2);
         } else if (loader_.FileCount() > 0) {
             Text(L"载入中…", (float)a.left, (float)(a.top + a.bottom) / 2 - 20,
                  (float)(a.right - a.left), 40, 13 * dpiScale_, br, 2);
         } else {
             Text(L"拖入图片，或按 Ctrl+O 打开", (float)a.left,
                  (float)(a.top + a.bottom) / 2 - 20, (float)(a.right - a.left), 40,
-                 14 * dpiScale_, br, 2);
+                 15 * dpiScale_, br, 2);
         }
         return;
     }
@@ -1063,12 +1154,28 @@ void App::RenderAndBlit() {
 
     DrawImageLayer();
 
+    if (!fullscreen_) DrawTitleBar();
+
+    // 底部控件可淡出（鼠标静止 2.6s 后降到 0，一动即回）
+    const float ca = ChromeAlpha();
+    bool fade = (!fullscreen_) && ca < 0.999f;
+    if (fade) {
+        if (!layer_ && FAILED(rt_->CreateLayer(nullptr, layer_.ReleaseAndGetAddressOf()))) fade = false;
+        if (fade) {
+            D2D1_LAYER_PARAMETERS lp = D2D1::LayerParameters(
+                D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                D2D1::IdentityMatrix(), ca, nullptr, D2D1_LAYER_OPTIONS_NONE);
+            rt_->PushLayer(&lp, layer_.Get());
+        }
+    }
     if (!fullscreen_) {
-        DrawTitleBar();
         DrawBottomBar();
         DrawInfoPill();
     }
     DrawArrows();
+    if (fade) rt_->PopLayer();
+
+    DrawFilmstrip();
 
     HRESULT hr = rt_->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET) {
@@ -1118,7 +1225,29 @@ void App::Paint() {
         tFirstImage_ = NowMs();
         tProcFirstImage_ = ProcElapsedMs();
         if (benchMode_) MeasureFrames();
-        if (!shotPath_.empty()) SaveShot(shotPath_);
+        if (!shotPath_.empty()) {
+            if (!benchMode_) {
+                // 截图前把附近的缩略图收完（顺便验证胶片条）
+                ULONGLONG deadline = GetTickCount64() + 2000;
+                MSG m;
+                while (GetTickCount64() < deadline) {
+                    bool allDone = true;
+                    size_t n = loader_.FileCount();
+                    for (size_t k = 0; k < n && k < 24; ++k) {
+                        if (!thumbs_.count((uint32_t)k)) {
+                            allDone = false;
+                            break;
+                        }
+                    }
+                    if (allDone) break;
+                    Sleep(25);
+                    while (PeekMessageW(&m, hwnd_, WM_APP_DECODED, WM_APP_DECODED, PM_REMOVE))
+                        OnDecodedReady();
+                }
+                RenderAndBlit();
+            }
+            SaveShot(shotPath_);
+        }
         if (benchMode_) ReportBench();
         PostMessageW(hwnd_, WM_CLOSE, 0, 0);
     }
@@ -1139,6 +1268,58 @@ double App::ProcElapsedMs() {
     return double(n.QuadPart - c.QuadPart) / 10000.0;
 }
 
+void App::ApplyUiScale() {
+    float ui = Settings::Get().uiScale;
+    if (ui < 0.75f) ui = 0.75f;
+    if (ui > 3.0f) ui = 3.0f;
+    dpiScale_ = monitorScale_ * ui;
+    if (dpiScale_ < 0.75f) dpiScale_ = 0.75f;
+    titleH_ = fullscreen_ ? 0.f : std::round(34.f * dpiScale_);
+}
+
+void App::SetUiScale(float v) {
+    v = std::clamp(v, 0.75f, 3.0f);
+    Settings& cfg = Settings::Get();
+    if (std::fabs(v - cfg.uiScale) < 0.001f) return;
+    cfg.uiScale = v;
+    cfg.Save();
+    ApplyUiScale();
+    UpdateRequests();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+float App::StripHeight() const {
+    if (fullscreen_ || !stripVisible_ || loader_.FileCount() == 0) return 0.f;
+    return std::round(86.f * dpiScale_);
+}
+
+float App::ChromeAlpha() const {
+    return Settings::Get().hideChrome ? chromeAlpha_ : 1.f;
+}
+
+void App::UpdateIdle() {
+    Settings& cfg = Settings::Get();
+    if (!cfg.hideChrome) {
+        if (chromeAlpha_ != 1.f) {
+            chromeAlpha_ = 1.f;
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+        return;
+    }
+    double now = NowMs();
+    bool idle = (lastInputMs_ > 0) && (now - lastInputMs_ > 2600.0);
+    float target = idle ? 0.0f : 1.f;
+    if (hover_ != kBtnNone) target = 1.f;
+    float next = chromeAlpha_;
+    const float step = 0.12f;
+    if (next < target) next = std::min(target, next + step);
+    else if (next > target) next = std::max(target, next - step);
+    if (std::fabs(next - chromeAlpha_) > 0.001f) {
+        chromeAlpha_ = next;
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+}
+
 void App::DrawTitleBar() {
     RECT rc{};
     GetClientRect(hwnd_, &rc);
@@ -1155,17 +1336,17 @@ void App::DrawTitleBar() {
     rt_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(x + 5 * dpiScale_, cy), 5 * dpiScale_, 5 * dpiScale_),
                      accent, 1.4f * dpiScale_);
     x += 16 * dpiScale_;
-    Text(L"看看", x, 0, 40 * dpiScale_, h, 12.5f * dpiScale_, Brush(kColorText));
+    Text(L"看看", x, 0, 46 * dpiScale_, h, 13.5f * dpiScale_, Brush(kColorText));
     x += 30 * dpiScale_;
     std::wstring sep = L"·";
-    Text(sep, x, 0, 10 * dpiScale_, h, 12.5f * dpiScale_, Brush(kColorText3));
+    Text(sep, x, 0, 12 * dpiScale_, h, 13.5f * dpiScale_, Brush(kColorText3));
     x += 12 * dpiScale_;
 
     std::wstring name;
     if (loader_.FileCount() > 0) name = FileNameOf(loader_.PathAt(curIndex_));
     if (name.empty()) name = L"看看 SeeSee";
     float avail = w - x - 140 * dpiScale_;
-    Text(name, x, 0, std::max<float>(20, avail), h, 12.5f * dpiScale_, Brush(kColorText2));
+    Text(name, x, 0, std::max<float>(20, avail), h, 13.5f * dpiScale_, Brush(kColorText2));
 
     // 右侧窗口按钮
     float bw = 46 * dpiScale_;
@@ -1218,7 +1399,7 @@ void App::DrawBottomBar() {
     total += 2 * (10 * s);  // 两个分隔条
 
     float bx = (w - total) * 0.5f;
-    float by = h - 14 * s - barH;
+    float by = h - StripHeight() - 14 * s - barH;
 
     D2D1_RECT_F barRc = D2D1::RectF(bx, by, bx + total, by + barH);
     FillRoundRect(barRc, barH * 0.5f, Brush(D2D1::ColorF(0x1B1E23, 0.94f)));
@@ -1263,7 +1444,7 @@ void App::DrawBottomBar() {
             case kBtnActual: {
                 wchar_t buf[16];
                 swprintf_s(buf, L"%d%%", (int)std::lround(CurrentZoom() * 100.0));
-                IDWriteTextFormat* monoFmt = Format(11.5f * s, true, 2);
+                IDWriteTextFormat* monoFmt = Format(12.5f * s, true, 2);
                 if (monoFmt) {
                     rt_->DrawTextW(buf, (UINT32)wcslen(buf), monoFmt, br, fg,
                                    D2D1_DRAW_TEXT_OPTIONS_CLIP);
@@ -1318,15 +1499,15 @@ void App::DrawInfoPill() {
     swprintf_s(idxBuf, L"%u / %zu", curIndex_ + 1, loader_.FileCount());
     std::wstring idx = idxBuf;
 
-    const float pillH = 28 * s;
-    const float padX = 12 * s;
+    const float pillH = 30 * s;
+    const float padX = 13 * s;
     const float gap = 16 * s;
-    const float textSize = 11.5f * s;
+    const float textSize = 12.5f * s;
     const float wInfo = MeasureText(info, textSize, false);
     const float wIdx = MeasureText(idx, textSize, true);
     const float pillW = padX * 2 + wInfo + gap + wIdx;
     const float px = 16 * s;
-    const float py = h - 14 * s - pillH;
+    const float py = h - StripHeight() - 14 * s - pillH;
 
     D2D1_RECT_F pill = D2D1::RectF(px, py, px + pillW, py + pillH);
     FillRoundRect(pill, pillH * 0.5f, Brush(D2D1::ColorF(0x1B1E23, 0.9f)));
@@ -1361,6 +1542,87 @@ void App::DrawArrows() {
             rt_->DrawLine(D2D1::Point2F(ar.cx + g * 0.7f, cy), D2D1::Point2F(ar.cx - g * 0.7f, cy + g), fg, 1.6f * s);
         }
         if (enabled) AddHit(rc, ar.id, true);
+    }
+}
+
+void App::SyncStripScroll() {
+    RECT rc{};
+    GetClientRect(hwnd_, &rc);
+    const float s = dpiScale_;
+    const float pad = 12 * s, gap = 8 * s, ts = 60 * s;
+    const size_t n = loader_.FileCount();
+    float W = (float)rc.right;
+    float contentW = pad * 2 + (float)n * ts + (n > 1 ? (float)(n - 1) * gap : 0.f);
+    if (contentW <= W) {  // 图少时整排居中，别贴着左边
+        stripScroll_ = (W - contentW) * 0.5f;
+        return;
+    }
+    float maxNeg = std::min(0.f, W - contentW);  // <= 0
+    float ideal = W * 0.5f - (pad + (float)curIndex_ * (ts + gap) + ts * 0.5f);
+    stripScroll_ = std::clamp(ideal, maxNeg, 0.f);
+}
+
+// 底部胶片条：缩略图横向排列，点击跳转，当前项高亮
+void App::DrawFilmstrip() {
+    const float sh = StripHeight();
+    if (sh <= 0.f) return;
+
+    RECT rc{};
+    GetClientRect(hwnd_, &rc);
+    const float W = (float)rc.right, H = (float)rc.bottom;
+    const float s = dpiScale_;
+    const float top = H - sh;
+
+    rt_->FillRectangle(D2D1::RectF(0, top, W, H), Brush(kColorTitleBg));
+    rt_->DrawLine(D2D1::Point2F(0, top + 0.5f), D2D1::Point2F(W, top + 0.5f), Brush(kColorBorder), 1.f);
+
+    const size_t n = loader_.FileCount();
+    if (n == 0) return;
+
+    const float pad = 12 * s, gap = 8 * s, ts = 60 * s;
+    const float cy = top + sh * 0.5f;
+
+    rt_->PushAxisAlignedClip(D2D1::RectF(0, top + 1.f, W, H), D2D1_ANTIALIAS_MODE_ALIASED);
+    for (size_t i = 0; i < n; ++i) {
+        float x = pad + (float)i * (ts + gap) + stripScroll_;
+        if (x > W || x + ts < 0) continue;
+        D2D1_RECT_F cell = D2D1::RectF(x, cy - ts * 0.5f, x + ts, cy + ts * 0.5f);
+        FillRoundRect(cell, 5 * s, Brush(D2D1::ColorF(0x232830, 1.f)));
+
+        auto it = thumbs_.find((uint32_t)i);
+        if (it != thumbs_.end() && it->second) {
+            D2D1_SIZE_F bsz = it->second->GetSize();
+            if (bsz.width > 0 && bsz.height > 0) {
+                float k = std::min(ts / bsz.width, ts / bsz.height);
+                float dw = bsz.width * k, dh = bsz.height * k;
+                D2D1_RECT_F dr = D2D1::RectF(x + (ts - dw) * 0.5f, cy - dh * 0.5f,
+                                             x + (ts + dw) * 0.5f, cy + dh * 0.5f);
+                rt_->DrawBitmap(it->second.Get(), dr, 1.0f,
+                                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, nullptr);
+            }
+        }
+        if (i == curIndex_) {
+            StrokeRoundRect(D2D1::RectF(cell.left - 1.5f * s, cell.top - 1.5f * s,
+                                        cell.right + 1.5f * s, cell.bottom + 1.5f * s),
+                            6 * s, Brush(kColorAccent), 2 * s);
+        }
+        AddHit(cell, kBtnThumbBase + (int)i);
+    }
+    rt_->PopAxisAlignedClip();
+}
+
+void App::RequestThumbs() {
+    size_t n = loader_.FileCount();
+    if (n == 0) return;
+    const int64_t win = 40;
+    int64_t lo = (int64_t)curIndex_ - win;
+    int64_t hi = (int64_t)curIndex_ + win;
+    if (lo < 0) lo = 0;
+    if (hi > (int64_t)n - 1) hi = (int64_t)n - 1;
+    for (int64_t i = lo; i <= hi; ++i) {
+        uint32_t idx = (uint32_t)i;
+        if (thumbs_.find(idx) != thumbs_.end()) continue;
+        loader_.Request(idx, kLevelThumb, 2);
     }
 }
 
@@ -1484,11 +1746,14 @@ void App::ReportBench() {
                L"    解码回来到首张上屏          %6.1f ms\n"
                L"  并行段（与建 D2D 设备重叠）:\n"
                L"    读文件 %.1f ms / WIC 解码 %.1f ms / 上传 GPU %.1f ms\n"
-               L"  稳态每帧（平移 30 帧平均）: %.1f ms  (~%.0f fps)\n",
+               L"  稳态每帧（平移 30 帧平均）: %.1f ms  (~%.0f fps)\n"
+               L"  界面缩放 %.2fx（显示器 %.0f%%）/ 胶片条 %.0f px / 窗口 %ld×%ld\n",
                procMs, preMain, tFactory_ - tStart_, tWindowCreated_ - tFactory_,
                benchFileCount_, tOpen_ - tWindowCreated_, firstPaintMs_, deviceMs_, drawMs_,
                std::max<double>(0, tFirstImage_ - tWindowShown_ - readMs_ - decMs_ - uploadMs_),
-               readMs_, decMs_, uploadMs_, frameMs_, frameMs_ > 0 ? 1000.0 / frameMs_ : 0.0);
+               readMs_, decMs_, uploadMs_, frameMs_, frameMs_ > 0 ? 1000.0 / frameMs_ : 0.0,
+               dpiScale_, monitorScale_ * 100.0, StripHeight(),
+               (long)(winRect_.right - winRect_.left), (long)(winRect_.bottom - winRect_.top));
     (void)scanMs_;
     OutputDebugStringW(buf);
     FILE* f = nullptr;

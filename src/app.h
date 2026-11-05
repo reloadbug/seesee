@@ -43,7 +43,8 @@ private:
         kBtnClose,
         kBtnArrowLeft,
         kBtnArrowRight,
-        kBtnCount
+        kBtnCount,
+        kBtnThumbBase = 1000  // 胶片条：kBtnThumbBase + 索引
     };
 
     struct Hit {
@@ -101,6 +102,7 @@ private:
     void DrawBottomBar();
     void DrawInfoPill();
     void DrawArrows();
+    void DrawFilmstrip();
     void AddHit(D2D1_RECT_F rc, int id, bool circular = false);
     int HitTest(POINT pt) const;
     int HitTestScreen(POINT screenPt) const;
@@ -118,6 +120,17 @@ private:
     void ReportBench();
     bool SaveShot(const std::wstring& path);
     double ProcElapsedMs();
+
+    // DPI / 界面缩放
+    void ApplyUiScale();               // monitorScale_ * settings.uiScale → dpiScale_
+    void SetUiScale(float v);          // 用户主动调整（持久化）
+    // 胶片条
+    float StripHeight() const;         // 当前胶片条占用的高度（物理像素，0 = 隐藏）
+    void SyncStripScroll();            // 让当前项保持在可视区中央
+    void RequestThumbs();              // 请求当前窗口附近的缩略图
+    // 控件淡出
+    float ChromeAlpha() const;
+    void UpdateIdle();
 
     // ---- 状态 ----
     HINSTANCE hinst_ = nullptr;
@@ -142,6 +155,12 @@ private:
     std::map<uint64_t, CacheEntry> cache_;
     uint64_t useCounter_ = 0;
 
+    // 胶片条缩略图（level = kLevelThumb），nullptr 表示解码失败/占位
+    std::map<uint32_t, ComPtr<ID2D1Bitmap>> thumbs_;
+    bool stripVisible_ = true;
+    float stripScroll_ = 0.f;
+    ComPtr<ID2D1Layer> layer_;  // 控件淡出用的不透明图层
+
     uint32_t curIndex_ = 0;
     uint32_t requestedLevel_ = kLevelFit;
     bool haveImage_ = false;
@@ -152,8 +171,12 @@ private:
     double zoom_ = 1.0;
     D2D1_POINT_2F offset_{0.f, 0.f};
 
-    float dpiScale_ = 1.0f;
+    float dpiScale_ = 1.0f;      // 实际界面缩放 = 显示器 DPI × 用户 uiScale
+    float monitorScale_ = 1.0f;  // 显示器 DPI / 96
     float titleH_ = 34.f;
+    float chromeAlpha_ = 1.f;    // 底部控件不透明度（空闲淡出）
+    double lastInputMs_ = 0;
+    bool idleTimer_ = false;
     bool fullscreen_ = false;
     bool maximized_ = false;
     RECT savedRect_{};

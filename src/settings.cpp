@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <shlobj.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cwchar>
 
@@ -47,6 +48,8 @@ void Settings::Load() {
             else if (strcmp(key, "fitUpscale") == 0) fitUpscale = value != 0;
             else if (strcmp(key, "wheelNavigates") == 0) wheelNavigates = value != 0;
             else if (strcmp(key, "hideChrome") == 0) hideChrome = value != 0;
+            else if (strcmp(key, "uiScalePct") == 0) uiScale = (float)value / 100.0f;
+            else if (strcmp(key, "filmstrip") == 0) filmstrip = value != 0;
         }
     }
     fclose(f);
@@ -57,6 +60,8 @@ void Settings::Load() {
     if (preloadNext > 20) preloadNext = 20;
     if (workerThreads < 1) workerThreads = 1;
     if (workerThreads > 8) workerThreads = 8;
+    if (uiScale < 0.75f) uiScale = 0.75f;
+    if (uiScale > 3.0f) uiScale = 3.0f;
 }
 
 void Settings::Save() const {
@@ -70,5 +75,7 @@ void Settings::Save() const {
     fprintf(f, "fitUpscale=%d\n", fitUpscale ? 1 : 0);
     fprintf(f, "wheelNavigates=%d\n", wheelNavigates ? 1 : 0);
     fprintf(f, "hideChrome=%d\n", hideChrome ? 1 : 0);
+    fprintf(f, "uiScalePct=%d\n", (int)std::lround(uiScale * 100.0f));
+    fprintf(f, "filmstrip=%d\n", filmstrip ? 1 : 0);
     fclose(f);
 }
