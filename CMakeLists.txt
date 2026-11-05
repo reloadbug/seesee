@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(seesee VERSION 0.1.0 LANGUAGES CXX)
+project(seesee VERSION 0.3.0 LANGUAGES CXX)
 
 enable_language(RC)
 
@@ -16,6 +16,8 @@ add_executable(seesee WIN32
   src/loader.cpp
   src/settings.cpp
   src/assoc.cpp
+  src/i18n.cpp
+  src/keys.cpp
   resources/seesee.rc
 )
 

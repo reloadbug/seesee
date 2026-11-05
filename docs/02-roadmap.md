@@ -24,8 +24,9 @@
 | **M3 极速化** | `--bench` 全链路分帧 → 建窗与解码并行 → 渲染后端换软件 D2D（304 ms → **80 ms**） | ✅ 完成 |
 | **M4 看图体验打磨** | 邻图预取、EXIF 方向、缩放锚点、全屏、信息胶囊、缩放胶囊、左右悬停箭头 | ✅ 完成 |
 | **M5 默认看图工具** | HKCU 关联注册 + 系统「默认应用」跳转 + `.reg` 兜底 + Ctrl+D | ✅ 完成 |
-| **M6 UI 与原型对齐** | 高 DPI 适配（`dpiScale_` 真实初始化）、底部胶片条（±40 预取、点击跳转）、控件 2.6 s 自动淡出、尺寸微调 | 🚧 进行中（胶片条 / 淡出 / DPI 已完成；设置面板待做） |
-| **M7 v1.0 收尾** | 图标/清单/版本信息、异常与空目录态、README、安装说明、性能回归脚本 | ⏳ 待做 |
+| **M6 UI 与原型对齐** | 高 DPI 适配（`dpiScale_` 真实初始化）、底部胶片条（±40 预取、点击跳转）、控件 2.6 s 自动淡出、右滑设置面板 | ✅ 完成（v0.2：DPI / 胶片条 / 淡出；v0.3：设置面板） |
+| **M6.5 多语言与自定义快捷键** | `src/i18n.cpp` 文案表（中/英，跟随系统）、`src/keys.cpp` 键位表（默认值 / 覆盖 / 冲突解绑 / 持久化）、设置面板三个标签页 | ✅ 完成（v0.3） |
+| **M7 v1.0 收尾** | 图标/清单/版本信息、异常与空目录态、README、安装说明、性能回归脚本、内存优化（后备缓冲与缓存预算） | ⏳ 进行中 |
 | **M8 v2 照片管理** | 目录树、标签评分、筛选、批量操作 | 🔭 规划中 |
 
 ## 2. 代码结构
@@ -33,17 +34,19 @@
 ```
 seesee/
 ├─ src/
-│  ├─ main.cpp        入口：命令行解析（图片路径 / --bench / --shot / --register）
-│  ├─ app.h/.cpp      窗口、消息循环、渲染（D2D 软件 DC 目标 + DIB）、输入、缓存、基准
-│  ├─ loader.h/.cpp   目录扫描（自然排序）+ 线程池 + WIC 解码（DCT 缩放 / EXIF 方向 / 预取）
-│  ├─ settings.h/.cpp 设置（%LOCALAPPDATA%\SeeSee\settings.ini）
+│  ├─ main.cpp        入口：命令行解析（图片路径 / --bench / --shot / --panel / --lang / --register）
+│  ├─ app.h/.cpp      窗口、消息循环、渲染（D2D 软件 DC 目标 + DIB）、输入、缓存、设置面板、基准
+│  ├─ loader.h/.cpp   目录扫描（自然排序）+ 线程池 + WIC 解码（DCT 缩放 / EXIF 方向 / 预取 / 缩略图）
+│  ├─ settings.h/.cpp 设置（%LOCALAPPDATA%\SeeSee\settings.ini，含 language / keybind）
+│  ├─ i18n.h/.cpp     界面文案表（简体中文 / English，跟随系统）
+│  ├─ keys.h/.cpp     键位表（默认值 / 用户覆盖 / 冲突解绑 / 持久化 / 键名格式化）
 │  └─ assoc.h/.cpp    文件关联（HKCU ProgID + Capabilities + .reg 兜底）
 ├─ resources/         图标 .ico、清单 .manifest、资源 .rc
 ├─ prototype/         UI 高保真原型（HTML，单文件）
 ├─ tools/             一次性探针与生成脚本（不含在产品里）
 ├─ docs/              需求 / 计划 / UI 规范
 ├─ build.ps1          一键构建（vcvars64 → cmake → ninja）
-└─ bin/seesee.exe     产物（单文件，703 KB）
+└─ bin/seesee.exe     产物（单文件，765 KB）
 ```
 
 ## 3. 线程模型

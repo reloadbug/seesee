@@ -130,6 +130,8 @@ int App::Run(HINSTANCE hInst, const std::wstring& initialFile, bool benchMode,
     tFactory_ = NowMs();
 
     Settings& cfg = Settings::Get();
+    i18n::SetLanguageSetting(pendingLang_ >= 0 ? pendingLang_ : cfg.language);
+    keys::Load();
     loader_.Start(cfg.workerThreads);
     loader_.SetSink([this](std::shared_ptr<DecodedImage> img) {
         {
@@ -192,7 +194,8 @@ bool App::CreateMainWindow(HINSTANCE hInst) {
     RECT rc = DefaultWindowRect();
     winRect_ = rc;
 
-    hwnd_ = CreateWindowExW(0, kClassName, L"看看 SeeSee", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+    hwnd_ = CreateWindowExW(0, kClassName, i18n::T(i18n::kAppTitle),
+                            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
                             rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr,
                             hInst, this);
     if (!hwnd_) return false;
@@ -340,14 +343,73 @@ void App::GoTo(int64_t index) {
 void App::NextImage() { GoTo((int64_t)curIndex_ + 1); }
 void App::PrevImage() { GoTo((int64_t)curIndex_ - 1); }
 
+// 所有命令的唯一入口：自定义键位与设置面板按钮都走这里
+void App::RunCommand(int cmd) {
+    switch ((keys::Cmd)cmd) {
+        case keys::kPrev: PrevImage(); break;
+        case keys::kNext: NextImage(); break;
+        case keys::kFirst: GoTo(0); break;
+        case keys::kLast: GoTo((int64_t)loader_.FileCount() - 1); break;
+        case keys::kZoomIn:
+            SetZoomAnchored(CurrentZoom() * 1.25, AreaCenter());
+            UpdateRequests();
+            break;
+        case keys::kZoomOut:
+            SetZoomAnchored(CurrentZoom() / 1.25, AreaCenter());
+            UpdateRequests();
+            break;
+        case keys::kFit: ResetViewToFit(); UpdateRequests(); break;
+        case keys::kActual:
+            zoomMode_ = ZoomMode::Actual;
+            zoom_ = 1.0;
+            offset_ = D2D1::Point2F(0.f, 0.f);
+            UpdateRequests();
+            break;
+        case keys::kFullscreen: ToggleFullscreen(); break;
+        case keys::kOpen: ShowOpenDialog(); break;
+        case keys::kDefaultApp: {
+            std::wstring regFile;
+            if (assoc::Register(&regFile)) {
+                assoc::OpenDefaultAppsSettings();
+                ShowToast(i18n::T(i18n::kSetDefaultDone));
+            } else if (!regFile.empty()) {
+                ShowToast(i18n::T(i18n::kSetDefaultFailed));
+                std::wstring text =
+                    i18n::IsChinese()
+                        ? L"注册表写入被拒绝（可能被安全软件拦截）。\n\n已生成关联文件，双击导入即可完成关联：\n"
+                        : L"Registry write was refused (a security tool may be blocking it).\n\nA .reg file was created — double-click it to finish:\n";
+                text += regFile;
+                MessageBoxW(hwnd_, text.c_str(), i18n::T(i18n::kAppTitle),
+                            MB_OK | MB_ICONINFORMATION);
+            } else {
+                MessageBoxW(hwnd_, i18n::T(i18n::kSetDefaultFailed), i18n::T(i18n::kAppTitle),
+                            MB_OK | MB_ICONERROR);
+            }
+            break;
+        }
+        case keys::kStrip: {
+            stripVisible_ = !stripVisible_;
+            Settings& cfg = Settings::Get();
+            cfg.filmstrip = stripVisible_;
+            cfg.Save();
+            UpdateRequests();
+            break;
+        }
+        case keys::kSettings: ToggleSettings(); break;
+        case keys::kUiScaleUp: SetUiScale(Settings::Get().uiScale * 1.1f); break;
+        case keys::kUiScaleDown: SetUiScale(Settings::Get().uiScale / 1.1f); break;
+        default: break;
+    }
+}
+
 void App::UpdateCaption() {
     if (!hwnd_) return;
-    std::wstring cap = L"看看 SeeSee";
+    std::wstring cap = i18n::T(i18n::kAppTitle);
     const size_t n = loader_.FileCount();
     if (n > 0) {
         std::wstring name = FileNameOf(loader_.PathAt(curIndex_));
         if (!name.empty()) {
-            cap = L"看看 · " + name;
+            cap = std::wstring(i18n::T(i18n::kAppName)) + L" · " + name;
             if (n > 1) cap += L"  (" + std::to_wstring(curIndex_ + 1) + L"/" + std::to_wstring(n) + L")";
         }
     }
@@ -409,7 +471,7 @@ void App::OnDecodedReady() {
                 continue;
             }
             if (img->index == curIndex_) {
-                errorText_ = img->error.empty() ? L"无法打开此图片" : img->error;
+                errorText_ = img->error.empty() ? i18n::T(i18n::kCannotOpen) : img->error;
                 loading_ = false;
                 haveImage_ = false;
                 InvalidateRect(hwnd_, nullptr, FALSE);
@@ -715,12 +777,18 @@ LRESULT App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             int was = pressed_;
             pressed_ = kBtnNone;
             if (id != kBtnNone && id == was) {
+                if (id >= 200 && id < kBtnThumbBase) {  // 设置面板控件
+                    OnPanelClick(id);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
                 if (id >= kBtnThumbBase) {
                     GoTo((int64_t)(id - kBtnThumbBase));
                     InvalidateRect(hwnd, nullptr, FALSE);
                     return 0;
                 }
                 switch (id) {
+                    case kBtnSettings: ToggleSettings(); break;
                     case kBtnPrev:
                     case kBtnArrowLeft: PrevImage(); break;
                     case kBtnNext:
@@ -757,6 +825,17 @@ LRESULT App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         case WM_MOUSEWHEEL: {
             int delta = GET_WHEEL_DELTA_WPARAM(wp);
+            POINT wheelPt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            ScreenToClient(hwnd, &wheelPt);
+            // 指针在设置面板上 → 滚动面板（lp 对滚轮是屏幕坐标）
+            if (settingsOpen_ && wheelPt.x >= (LONG)panelRc_.left &&
+                wheelPt.x <= (LONG)panelRc_.right) {
+                setScroll_ -= (delta > 0 ? 60.f : -60.f) * dpiScale_;
+                if (setScroll_ < 0.f) setScroll_ = 0.f;
+                if (setScroll_ > setScrollMax_) setScroll_ = setScrollMax_;
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
             bool ctrl = (GET_KEYSTATE_WPARAM(wp) & MK_CONTROL) != 0;
             if (ctrl || !Settings::Get().wheelNavigates) {
                 POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
@@ -789,82 +868,53 @@ LRESULT App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_KEYDOWN: {
             lastInputMs_ = NowMs();
             if (chromeAlpha_ < 1.f) chromeAlpha_ = 1.f;
-            switch (wp) {
-                case VK_RIGHT:
-                case VK_DOWN:
-                case VK_NEXT: NextImage(); return 0;
-                case VK_LEFT:
-                case VK_UP:
-                case VK_PRIOR: PrevImage(); return 0;
-                case VK_HOME: GoTo(0); return 0;
-                case VK_END: GoTo((int64_t)loader_.FileCount() - 1); return 0;
-                case VK_ESCAPE:
-                    if (fullscreen_) {
-                        ToggleFullscreen();
-                    } else {
-                        PostMessageW(hwnd, WM_CLOSE, 0, 0);
-                    }
-                    return 0;
-                case VK_F11:
-                    ToggleFullscreen();
-                    return 0;
-                case VK_OEM_PLUS:
-                case VK_ADD: {
-                    if ((GetKeyState(VK_CONTROL) & 0x8000) && (GetKeyState(VK_SHIFT) & 0x8000)) {
-                        SetUiScale(Settings::Get().uiScale * 1.1f);  // 只放大界面，不动图片缩放
-                        return 0;
-                    }
-                    SetZoomAnchored(CurrentZoom() * 1.25, AreaCenter());
-                    UpdateRequests();
-                    return 0;
-                }
-                case VK_OEM_MINUS:
-                case VK_SUBTRACT: {
-                    if ((GetKeyState(VK_CONTROL) & 0x8000) && (GetKeyState(VK_SHIFT) & 0x8000)) {
-                        SetUiScale(Settings::Get().uiScale / 1.1f);
-                        return 0;
-                    }
-                    SetZoomAnchored(CurrentZoom() / 1.25, AreaCenter());
-                    UpdateRequests();
-                    return 0;
-                }
-                case 'T': {
-                    stripVisible_ = !stripVisible_;
-                    Settings& cfg = Settings::Get();
-                    cfg.filmstrip = stripVisible_;
-                    cfg.Save();
-                    UpdateRequests();
+            const UINT vk = (UINT)wp;
+
+            // 设置面板正在等新键位：这次按键只用于绑定
+            if (captureCmd_ >= 0) {
+                if (vk == VK_ESCAPE) {
+                    captureCmd_ = -1;
                     InvalidateRect(hwnd, nullptr, FALSE);
                     return 0;
                 }
-                case '0': ResetViewToFit(); UpdateRequests(); return 0;
-                case '1':
-                    zoomMode_ = ZoomMode::Actual;
-                    zoom_ = 1.0;
-                    offset_ = D2D1::Point2F(0.f, 0.f);
-                    UpdateRequests();
+                if (vk == VK_DELETE || vk == VK_BACK) {
+                    keys::Clear((keys::Cmd)captureCmd_);
+                    captureCmd_ = -1;
+                    InvalidateRect(hwnd, nullptr, FALSE);
                     return 0;
-                case 'O':
-                    if (GetKeyState(VK_CONTROL) & 0x8000) ShowOpenDialog();
-                    return 0;
-                case 'D':
-                    // Ctrl+D —— 一键设为默认看图工具
-                    if (GetKeyState(VK_CONTROL) & 0x8000) {
-                        std::wstring regFile;
-                        if (assoc::Register(&regFile)) {
-                            assoc::OpenDefaultAppsSettings();
-                        } else if (!regFile.empty()) {
-                            std::wstring text = L"注册表写入被拒绝（可能被安全软件拦截）。\n\n"
-                                               L"已生成关联文件，双击导入即可完成关联：\n" +
-                                               regFile;
-                            MessageBoxW(hwnd, text.c_str(), L"看看 SeeSee", MB_OK | MB_ICONINFORMATION);
-                        } else {
-                            MessageBoxW(hwnd, L"注册失败：无法写入注册表，也无法生成 .reg 文件。",
-                                        L"看看 SeeSee", MB_OK | MB_ICONERROR);
-                        }
-                    }
-                    return 0;
-                default: break;
+                }
+                if (vk == VK_CONTROL || vk == VK_SHIFT || vk == VK_MENU || vk == VK_LWIN ||
+                    vk == VK_RWIN || vk == VK_CAPITAL) {
+                    return 0;  // 纯修饰键不算一次绑定
+                }
+                CaptureKey(vk, (GetKeyState(VK_CONTROL) & 0x8000) != 0,
+                           (GetKeyState(VK_SHIFT) & 0x8000) != 0,
+                           (GetKeyState(VK_MENU) & 0x8000) != 0);
+                return 0;
+            }
+
+            // Esc 是硬绑定：先关设置面板，再退全屏，最后关窗口
+            if (vk == VK_ESCAPE) {
+                if (settingsOpen_) {
+                    settingsOpen_ = false;
+                    captureCmd_ = -1;
+                } else if (fullscreen_) {
+                    ToggleFullscreen();
+                } else {
+                    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                }
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+
+            const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+            const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+            keys::Cmd cmd = keys::Match(vk, ctrl, shift, alt);
+            if (cmd != keys::kCount) {
+                RunCommand((int)cmd);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
             }
             break;
         }
@@ -1044,7 +1094,9 @@ void App::AddHit(D2D1_RECT_F rc, int id, bool circular) {
 
 int App::HitTest(POINT pt) const {
     float x = (float)pt.x, y = (float)pt.y;
-    for (const auto& h : hits_) {
+    // 后画的（设置面板）优先命中
+    for (auto it = hits_.rbegin(); it != hits_.rend(); ++it) {
+        const Hit& h = *it;
         if (x >= h.rc.left && x <= h.rc.right && y >= h.rc.top && y <= h.rc.bottom) {
             if (h.circular) {
                 float cx = (h.rc.left + h.rc.right) * 0.5f;
@@ -1092,10 +1144,10 @@ void App::DrawImageLayer() {
             Text(errorText_, (float)a.left, (float)(a.top + a.bottom) / 2 - 20,
                  (float)(a.right - a.left), 42, 15.5f * dpiScale_, Brush(kColorText2), 2);
         } else if (loader_.FileCount() > 0) {
-            Text(L"载入中…", (float)a.left, (float)(a.top + a.bottom) / 2 - 20,
+            Text(i18n::T(i18n::kLoading), (float)a.left, (float)(a.top + a.bottom) / 2 - 20,
                  (float)(a.right - a.left), 40, 13 * dpiScale_, br, 2);
         } else {
-            Text(L"拖入图片，或按 Ctrl+O 打开", (float)a.left,
+            Text(i18n::T(i18n::kEmptyHint), (float)a.left,
                  (float)(a.top + a.bottom) / 2 - 20, (float)(a.right - a.left), 40,
                  15 * dpiScale_, br, 2);
         }
@@ -1151,6 +1203,7 @@ void App::RenderAndBlit() {
     if (fade) rt_->PopLayer();
 
     DrawFilmstrip();
+    if (settingsOpen_) DrawSettingsPanel();
 
     HRESULT hr = rt_->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET) {
@@ -1202,6 +1255,12 @@ void App::Paint() {
         if (benchMode_) MeasureFrames();
         if (!shotPath_.empty()) {
             if (!benchMode_) {
+                if (pendingPanel_ >= 0) {  // --panel：截图前把设置面板打开
+                    settingsOpen_ = true;
+                    settingsTab_ = pendingPanel_;
+                    setScroll_ = 0.f;
+                    if (pendingCapture_) captureCmd_ = keys::kPrev;
+                }
                 // 截图前把附近的缩略图收完（顺便验证胶片条）
                 ULONGLONG deadline = GetTickCount64() + 2000;
                 MSG m;
@@ -1285,6 +1344,7 @@ void App::UpdateIdle() {
     bool idle = (lastInputMs_ > 0) && (now - lastInputMs_ > 2600.0);
     float target = idle ? 0.0f : 1.f;
     if (hover_ != kBtnNone) target = 1.f;
+    if (settingsOpen_) target = 1.f;  // 设置面板开着时不淡出
     float next = chromeAlpha_;
     const float step = 0.12f;
     if (next < target) next = std::min(target, next + step);
@@ -1313,11 +1373,12 @@ void App::DrawBottomBar() {
         {kBtnZoomOut, iconW}, {kBtnZoomIn, iconW},
         {kBtnFit, iconW}, {kBtnActual, zoomW},
         {kBtnFullscreen, iconW},
+        {kBtnSettings, iconW},
     };
     const int n = (int)(sizeof(items) / sizeof(items[0]));
     float total = pad * 2;
     for (int i = 0; i < n; ++i) total += items[i].w + gap;
-    total += 2 * (10 * s);  // 两个分隔条
+    total += 3 * (10 * s);  // 三个分隔条
 
     float bx = (w - total) * 0.5f;
     float by = h - StripHeight() - 14 * s - barH;
@@ -1328,7 +1389,7 @@ void App::DrawBottomBar() {
 
     float x = bx + pad;
     for (int i = 0; i < n; ++i) {
-        if (i == 2 || i == 5) {
+        if (i == 2 || i == 5 || i == 7) {
             float sx = x + 4 * s;
             rt_->DrawLine(D2D1::Point2F(sx, by + barH * 0.5f - 10 * s),
                           D2D1::Point2F(sx, by + barH * 0.5f + 10 * s), Brush(kColorBorder), 1.f);
@@ -1382,6 +1443,20 @@ void App::DrawBottomBar() {
                 rt_->DrawLine(D2D1::Point2F(cx + g - 2 * s, cy + g), D2D1::Point2F(cx + g, cy + g), fg, 1.2f * s);
                 rt_->DrawLine(D2D1::Point2F(cx + g, cy + g), D2D1::Point2F(cx + g, cy + g - 2 * s), fg, 1.2f * s);
                 break;
+            case kBtnSettings: {
+                // 齿轮：圆 + 六根齿
+                const float rr = g * 0.72f;
+                rt_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), rr, rr), fg, 1.25f * s);
+                for (int k = 0; k < 6; ++k) {
+                    double a = k * 3.14159265358979 / 3.0;
+                    rt_->DrawLine(D2D1::Point2F(cx + (float)std::cos(a) * (rr + 1.0f * s),
+                                                cy + (float)std::sin(a) * (rr + 1.0f * s)),
+                                  D2D1::Point2F(cx + (float)std::cos(a) * (rr + 2.6f * s),
+                                                cy + (float)std::sin(a) * (rr + 2.6f * s)),
+                                  fg, 1.25f * s);
+                }
+                break;
+            }
             default: break;
         }
         AddHit(br, items[i].id);
@@ -1530,6 +1605,422 @@ void App::DrawFilmstrip() {
         AddHit(cell, kBtnThumbBase + (int)i);
     }
     rt_->PopAxisAlignedClip();
+}
+
+// ---------------------------------------------------------------- 设置面板
+
+float App::PanelWidth() const {
+    RECT rc{};
+    GetClientRect(hwnd_, &rc);
+    return std::min(380.f * dpiScale_, (float)rc.right * 0.46f);
+}
+
+void App::ToggleSettings() {
+    settingsOpen_ = !settingsOpen_;
+    captureCmd_ = -1;
+    toast_.clear();
+    if (settingsOpen_) {
+        setScroll_ = 0.f;
+        lastInputMs_ = NowMs();
+        chromeAlpha_ = 1.f;
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void App::RequestPanel(int tab, bool capture) {
+    pendingPanel_ = std::clamp(tab, 0, 2);
+    pendingCapture_ = capture;
+}
+
+void App::RequestLanguage(int v) { pendingLang_ = std::clamp(v, 0, 2); }
+
+void App::SetLanguage(int v) {
+    Settings& cfg = Settings::Get();
+    cfg.language = std::clamp(v, 0, 2);
+    cfg.Save();
+    i18n::SetLanguageSetting(cfg.language);
+    UpdateCaption();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void App::ShowToast(const std::wstring& text) {
+    toast_ = text;
+    toastUntil_ = NowMs() + 4000.0;
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void App::CaptureKey(UINT vk, bool ctrl, bool shift, bool alt) {
+    if (captureCmd_ < 0 || captureCmd_ >= keys::kCount) {
+        captureCmd_ = -1;
+        return;
+    }
+    const keys::Cmd cmd = (keys::Cmd)captureCmd_;
+    keys::Chord ch;
+    ch.vk = vk;
+    ch.ctrl = ctrl;
+    ch.shift = shift;
+    ch.alt = alt;
+    // 一个键只对应一个命令：先把冲突的那条解绑
+    int clearedCmd = -1;
+    for (int i = 0; i < keys::kCount; ++i) {
+        if (i == (int)cmd) continue;
+        for (const keys::Chord& other : keys::Current((keys::Cmd)i)) {
+            if (other.vk == ch.vk && other.ctrl == ch.ctrl && other.shift == ch.shift &&
+                other.alt == ch.alt) {
+                keys::Clear((keys::Cmd)i);
+                clearedCmd = i;
+                break;
+            }
+        }
+    }
+    keys::Set(cmd, ch);
+    captureCmd_ = -1;
+    if (clearedCmd >= 0) {
+        wchar_t buf[256];
+        swprintf_s(buf, i18n::T(i18n::kKeysConflict),
+                   i18n::T(keys::LabelStr((keys::Cmd)clearedCmd)));
+        ShowToast(buf);
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void App::OnPanelClick(int id) {
+    Settings& cfg = Settings::Get();
+
+    if (id >= kSetKeyBase && id < kSetKeyBase + (int)keys::kCount) {
+        const int cmd = id - kSetKeyBase;
+        captureCmd_ = (captureCmd_ == cmd) ? -1 : cmd;
+        lastInputMs_ = NowMs();
+        return;
+    }
+
+    switch (id) {
+        case kSetClose:
+            settingsOpen_ = false;
+            captureCmd_ = -1;
+            UpdateRequests();
+            break;
+        case kSetTabGeneral:
+        case kSetTabKeys:
+        case kSetTabAbout:
+            settingsTab_ = (id == kSetTabGeneral) ? 0 : (id == kSetTabKeys ? 1 : 2);
+            setScroll_ = 0.f;
+            captureCmd_ = -1;
+            break;
+        case kSetLangAuto: SetLanguage(0); break;
+        case kSetLangZh: SetLanguage(1); break;
+        case kSetLangEn: SetLanguage(2); break;
+        case kSetTgFilmstrip:
+            stripVisible_ = !stripVisible_;
+            cfg.filmstrip = stripVisible_;
+            cfg.Save();
+            stripScroll_ = 0.f;
+            UpdateRequests();
+            break;
+        case kSetTgHideChrome:
+            cfg.hideChrome = !cfg.hideChrome;
+            cfg.Save();
+            chromeAlpha_ = 1.f;
+            break;
+        case kSetTgWheelNav:
+            cfg.wheelNavigates = !cfg.wheelNavigates;
+            cfg.Save();
+            break;
+        case kSetTgUpscale:
+            cfg.fitUpscale = !cfg.fitUpscale;
+            cfg.Save();
+            ResetViewToFit();
+            UpdateRequests();
+            break;
+        case kSetZoomOut: SetUiScale(cfg.uiScale / 1.1f); break;
+        case kSetZoomIn: SetUiScale(cfg.uiScale * 1.1f); break;
+        case kSetZoomReset: SetUiScale(1.0f); break;
+        case kSetRegister: RunCommand((int)keys::kDefaultApp); break;
+        case kSetKeysReset:
+            keys::ResetAll();
+            captureCmd_ = -1;
+            ShowToast(i18n::T(i18n::kKeysResetAll));
+            break;
+        default: break;
+    }
+}
+
+void App::DrawSettingsPanel() {
+    RECT client{};
+    GetClientRect(hwnd_, &client);
+    const float s = dpiScale_;
+    const float W = (float)client.right;
+    const float bottomLimit = (float)client.bottom - StripHeight();
+    const float pw = PanelWidth();
+    panelRc_ = D2D1::RectF(W - pw, 0.f, W, bottomLimit);
+
+    // 面板底色比画布略亮一点，并在左缘画一条分隔线，形成"浮在图片上"的层次
+    rt_->FillRectangle(panelRc_, Brush(D2D1::ColorF(0x14171C, 0.985f)));
+    rt_->DrawLine(D2D1::Point2F(panelRc_.left, panelRc_.top),
+                  D2D1::Point2F(panelRc_.left, panelRc_.bottom), Brush(kColorBorder), 1.f);
+
+    const float padX = 18 * s;
+    const float x0 = panelRc_.left + padX;
+    const float x1 = panelRc_.right - padX;
+    const float cw = x1 - x0;
+
+    // 标题 + 关闭
+    float y = 16 * s;
+    Text(i18n::T(i18n::kSettingsTitle), x0, y, cw - 30 * s, 30 * s, 15.5f * s, Brush(kColorText));
+    {
+        D2D1_RECT_F closeRc = D2D1::RectF(x1 - 24 * s, y + 3 * s, x1, y + 27 * s);
+        const bool hot = (hover_ == kSetClose);
+        if (hot) FillRoundRect(closeRc, 6 * s, Brush(kColorHover));
+        const float ccx = (closeRc.left + closeRc.right) * 0.5f;
+        const float ccy = (closeRc.top + closeRc.bottom) * 0.5f;
+        const float g = 4.6f * s;
+        ID2D1SolidColorBrush* fg = Brush(hot ? kColorText : kColorText2);
+        rt_->DrawLine(D2D1::Point2F(ccx - g, ccy - g), D2D1::Point2F(ccx + g, ccy + g), fg, 1.4f * s);
+        rt_->DrawLine(D2D1::Point2F(ccx - g, ccy + g), D2D1::Point2F(ccx + g, ccy - g), fg, 1.4f * s);
+        AddHit(closeRc, kSetClose);
+    }
+    y += 34 * s;
+
+    // 三个标签页
+    {
+        struct TabDef {
+            int id;
+            i18n::Str label;
+        };
+        const TabDef tabs[3] = {{kSetTabGeneral, i18n::kTabGeneral},
+                                {kSetTabKeys, i18n::kTabKeys},
+                                {kSetTabAbout, i18n::kTabAbout}};
+        const float gapT = 4 * s;
+        const float tw = (cw - gapT * 2) / 3.f;
+        const float th = 30 * s;
+        FillRoundRect(D2D1::RectF(x0 - 3 * s, y - 3 * s, x1 + 3 * s, y + th + 3 * s), 9 * s,
+                      Brush(D2D1::ColorF(0x0F1114, 0.9f)));
+        for (int i = 0; i < 3; ++i) {
+            const float tx = x0 + i * (tw + gapT);
+            D2D1_RECT_F tr = D2D1::RectF(tx, y, tx + tw, y + th);
+            const bool sel = (settingsTab_ == i);
+            if (sel) FillRoundRect(tr, 8 * s, Brush(D2D1::ColorF(0x262B33)));
+            else if (hover_ == tabs[i].id) FillRoundRect(tr, 8 * s, Brush(kColorHover));
+            Text(i18n::T(tabs[i].label), tr.left, tr.top, tw, th, 12.5f * s,
+                 Brush(sel ? kColorText : kColorText2), 2);
+            AddHit(tr, tabs[i].id);
+        }
+        y += th + 16 * s;
+    }
+
+    const float clipTop = y;
+    // 快捷键页底部留一条固定页脚（Esc 提示 + 恢复默认），列表在它上面滚动
+    const float footerH = (settingsTab_ == 1) ? 78 * s : 0.f;
+    const D2D1_RECT_F clip = D2D1::RectF(panelRc_.left, clipTop, panelRc_.right,
+                                         bottomLimit - 10 * s - footerH);
+    const float clipH = clip.bottom - clip.top;
+    rt_->PushAxisAlignedClip(clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    float yy = clipTop - setScroll_;
+    const float rowH = 34 * s;
+    Settings& cfg = Settings::Get();
+
+    auto toggleRow = [&](i18n::Str label, bool on, int id) {
+        D2D1_RECT_F row = D2D1::RectF(x0 - 8 * s, yy, x1 + 8 * s, yy + rowH);
+        if (hover_ == id) FillRoundRect(row, 8 * s, Brush(kColorHover));
+        Text(i18n::T(label), x0, yy, cw - 54 * s, rowH, 12.5f * s, Brush(kColorText));
+        const float sw = 38 * s, sh = 22 * s;
+        D2D1_RECT_F track = D2D1::RectF(x1 - sw, yy + (rowH - sh) * 0.5f, x1, yy + (rowH + sh) * 0.5f);
+        FillRoundRect(track, sh * 0.5f,
+                      Brush(on ? D2D1::ColorF(0x5B9CFF, 0.85f) : D2D1::ColorF(0x2A2F36)));
+        const float kr = (sh - 4 * s) * 0.5f;
+        const float kx = on ? track.right - kr - 2 * s : track.left + kr + 2 * s;
+        rt_->FillEllipse(
+            D2D1::Ellipse(D2D1::Point2F(kx, (track.top + track.bottom) * 0.5f), kr, kr),
+            Brush(D2D1::ColorF(0xFFFFFF, on ? 1.0f : 0.75f)));
+        AddHit(row, id);
+        yy += rowH;
+    };
+
+    auto section = [&](i18n::Str label) {
+        yy += 8 * s;
+        Text(i18n::T(label), x0, yy, cw, 16 * s, 10.5f * s, Brush(kColorText3));
+        yy += 20 * s;
+    };
+
+    auto segment3 = [&](i18n::Str l0, i18n::Str l1, i18n::Str l2, int sel, int id0, int id1,
+                        int id2) {
+        const float h = 30 * s, gapT = 4 * s;
+        const float w = (cw - gapT * 2) / 3.f;
+        const i18n::Str labels[3] = {l0, l1, l2};
+        const int ids[3] = {id0, id1, id2};
+        for (int i = 0; i < 3; ++i) {
+            const float tx = x0 + i * (w + gapT);
+            D2D1_RECT_F r = D2D1::RectF(tx, yy, tx + w, yy + h);
+            const bool on = (sel == i);
+            FillRoundRect(r, 8 * s, Brush(on ? D2D1::ColorF(0x262B33) : D2D1::ColorF(0x1B1E23)));
+            if (!on && hover_ == ids[i]) FillRoundRect(r, 8 * s, Brush(kColorHover));
+            Text(i18n::T(labels[i]), r.left, r.top, w, h, 12 * s,
+                 Brush(on ? kColorText : kColorText2), 2);
+            if (on) StrokeRoundRect(r, 8 * s, Brush(D2D1::ColorF(0x5B9CFF, 0.55f)), 1.f);
+            AddHit(r, ids[i]);
+        }
+        yy += h + 8 * s;
+    };
+
+    auto smallButton = [&](D2D1_RECT_F b, int id, bool minus, bool plus) {
+        FillRoundRect(b, 7 * s, Brush(D2D1::ColorF(0x1B1E23)));
+        if (hover_ == id) FillRoundRect(b, 7 * s, Brush(kColorHover));
+        const float bcx = (b.left + b.right) * 0.5f, bcy = (b.top + b.bottom) * 0.5f;
+        const float g = 4.5f * s;
+        ID2D1SolidColorBrush* fg = Brush(kColorText);
+        if (minus || plus) {
+            rt_->DrawLine(D2D1::Point2F(bcx - g, bcy), D2D1::Point2F(bcx + g, bcy), fg, 1.3f * s);
+        }
+        if (plus) {
+            rt_->DrawLine(D2D1::Point2F(bcx, bcy - g), D2D1::Point2F(bcx, bcy + g), fg, 1.3f * s);
+        }
+        AddHit(b, id);
+    };
+
+    auto textButton = [&](i18n::Str label, D2D1_RECT_F b, int id) {
+        FillRoundRect(b, 7 * s, Brush(D2D1::ColorF(0x1B1E23)));
+        if (hover_ == id) FillRoundRect(b, 7 * s, Brush(kColorHover));
+        Text(i18n::T(label), b.left, b.top, b.right - b.left, b.bottom - b.top, 11.5f * s,
+             Brush(kColorText2), 2);
+        AddHit(b, id);
+    };
+
+    auto wideButton = [&](i18n::Str label, int id, bool primary) {
+        const float h = 34 * s;
+        D2D1_RECT_F r = D2D1::RectF(x0, yy + 4 * s, x1, yy + 4 * s + h);
+        FillRoundRect(r, 8 * s, Brush(primary ? D2D1::ColorF(0x5B9CFF, 0.14f)
+                                              : D2D1::ColorF(0x1B1E23)));
+        if (hover_ == id) FillRoundRect(r, 8 * s, Brush(kColorHover));
+        StrokeRoundRect(r, 8 * s,
+                        Brush(primary ? D2D1::ColorF(0x5B9CFF, 0.5f) : kColorBorder), 1.f);
+        Text(i18n::T(label), r.left, r.top, x1 - x0, h, 12.5f * s,
+             Brush(primary ? kColorAccent : kColorText2), 2);
+        AddHit(r, id);
+        yy += h + 10 * s;
+    };
+
+    if (settingsTab_ == 0) {
+        section(i18n::kLanguage);
+        segment3(i18n::kLangSystem, i18n::kLangZh, i18n::kLangEn, cfg.language, kSetLangAuto,
+                 kSetLangZh, kSetLangEn);
+
+        section(i18n::kSectionWindow);
+        {
+            // 界面缩放：文字 + [−] 百分比 [+] [重置]
+            const float h = 38 * s, bh = 26 * s, bw = 30 * s;
+            const float byy = yy + (h - bh) * 0.5f;
+            Text(i18n::T(i18n::kUiScale), x0, yy, cw * 0.45f, h, 12.5f * s, Brush(kColorText));
+            const float resetW = MeasureText(i18n::T(i18n::kReset), 11.5f * s, false) + 20 * s;
+            D2D1_RECT_F resetRc = D2D1::RectF(x1 - resetW, byy, x1, byy + bh);
+            D2D1_RECT_F plusRc =
+                D2D1::RectF(resetRc.left - 10 * s - bw, byy, resetRc.left - 10 * s, byy + bh);
+            D2D1_RECT_F minusRc = D2D1::RectF(plusRc.left - 4 * s - bw, byy, plusRc.left - 4 * s,
+                                              byy + bh);
+            smallButton(minusRc, kSetZoomOut, true, false);
+            smallButton(plusRc, kSetZoomIn, false, true);
+            textButton(i18n::kReset, resetRc, kSetZoomReset);
+            wchar_t buf[32];
+            swprintf_s(buf, L"%d%%", (int)std::lround(cfg.uiScale * 100.0f));
+            Text(buf, minusRc.left - 54 * s, yy, 48 * s, h, 12 * s, Brush(kColorText2), 1);
+            yy += h;
+        }
+        toggleRow(i18n::kFilmstrip, stripVisible_, kSetTgFilmstrip);
+        toggleRow(i18n::kHideChrome, cfg.hideChrome, kSetTgHideChrome);
+
+        section(i18n::kSectionView);
+        toggleRow(i18n::kWheelNav, cfg.wheelNavigates, kSetTgWheelNav);
+        toggleRow(i18n::kFitUpscale, cfg.fitUpscale, kSetTgUpscale);
+
+        yy += 8 * s;
+        wideButton(i18n::kSetDefaultApp, kSetRegister, true);
+        if (!toast_.empty() && NowMs() < toastUntil_) {
+            Text(toast_, x0, yy - 4 * s, cw, 34 * s, 11 * s, Brush(kColorText3));
+            yy += 26 * s;
+        }
+    } else if (settingsTab_ == 1) {
+        Text(i18n::T(i18n::kKeysHint), x0, yy, cw, 20 * s, 10.5f * s, Brush(kColorText3));
+        yy += 24 * s;
+        for (int i = 0; i < keys::kCount; ++i) {
+            const keys::Cmd c = (keys::Cmd)i;
+            const float h = 34 * s;
+            const bool cap = (captureCmd_ == i);
+            D2D1_RECT_F row = D2D1::RectF(x0 - 8 * s, yy, x1 + 8 * s, yy + h);
+            if (cap) FillRoundRect(row, 8 * s, Brush(D2D1::ColorF(0x5B9CFF, 0.16f)));
+            else if (hover_ == kSetKeyBase + i) FillRoundRect(row, 8 * s, Brush(kColorHover));
+
+            std::wstring txt;
+            if (cap) {
+                txt = i18n::T(i18n::kKeysCapturing);
+            } else {
+                std::vector<keys::Chord> chords = keys::Current(c);
+                for (size_t k = 0; k < chords.size(); ++k) {
+                    if (k) txt += L" · ";
+                    txt += keys::Format(chords[k]);
+                }
+                if (txt.empty()) txt = i18n::T(i18n::kKeysEmpty);
+            }
+            const float chipH = 24 * s;
+            const float chipW = MeasureText(txt, 11 * s, false) + 20 * s;
+            D2D1_RECT_F chip =
+                D2D1::RectF(x1 - chipW, yy + (h - chipH) * 0.5f, x1, yy + (h + chipH) * 0.5f);
+            FillRoundRect(chip, 6 * s, Brush(D2D1::ColorF(0x24282F)));
+            if (cap) StrokeRoundRect(chip, 6 * s, Brush(D2D1::ColorF(0x5B9CFF, 0.8f)), 1.2f * s);
+            Text(txt, chip.left, chip.top, chipW, chipH, 11 * s,
+                 Brush(cap ? kColorAccent : kColorText2), 2);
+            Text(i18n::T(keys::LabelStr(c)), x0, yy, cw - chipW - 12 * s, h, 12.5f * s,
+                 Brush(kColorText));
+            AddHit(row, kSetKeyBase + i);
+            yy += h;
+        }
+    } else {
+        Text(std::wstring(i18n::T(i18n::kAppName)) + L" · " + i18n::T(i18n::kVersion) + L" 0.3.0",
+             x0, yy, cw, 28 * s, 14 * s, Brush(kColorText));
+        yy += 30 * s;
+        Text(i18n::T(i18n::kAboutTagline), x0, yy, cw, 22 * s, 12 * s, Brush(kColorText2));
+        yy += 28 * s;
+        Text(i18n::T(i18n::kAboutTech), x0, yy, cw, 44 * s, 11 * s, Brush(kColorText3));
+        yy += 40 * s;
+        Text(i18n::T(i18n::kAboutPerf), x0, yy, cw, 22 * s, 11 * s, Brush(kColorText3));
+        yy += 30 * s;
+        Text(i18n::T(i18n::kAboutRepo), x0, yy, cw, 22 * s, 11.5f * s, Brush(kColorAccent));
+        yy += 26 * s;
+        Text(i18n::T(i18n::kAboutLicense), x0, yy, cw, 22 * s, 11 * s, Brush(kColorText3));
+        yy += 28 * s;
+    }
+
+    rt_->PopAxisAlignedClip();
+
+    // 滚动范围：内容高 - 可视高
+    const float contentH = (yy + setScroll_) - clipTop;
+    setScrollMax_ = std::max(0.f, contentH - clipH);
+    if (setScroll_ > setScrollMax_) setScroll_ = setScrollMax_;
+
+    // 细滚动条
+    if (setScrollMax_ > 0.f && clipH > 1.f) {
+        const float thumbH = std::max(28 * s, clipH * (clipH / (clipH + setScrollMax_)));
+        const float t = setScroll_ / setScrollMax_;
+        const float thumbTop = clip.top + (clipH - thumbH) * t;
+        const float sbx = panelRc_.right - 7 * s;
+        FillRoundRect(D2D1::RectF(sbx, thumbTop, sbx + 3 * s, thumbTop + thumbH), 1.5f * s,
+                      Brush(D2D1::ColorF(0xFFFFFF, 0.16f)));
+    }
+
+    // 快捷键页的固定页脚：Esc 提示 + 恢复默认（不随列表滚动）
+    if (footerH > 0.f) {
+        const float fy = clip.bottom;
+        rt_->DrawLine(D2D1::Point2F(x0, fy + 1.f), D2D1::Point2F(x1, fy + 1.f),
+                      Brush(kColorBorder), 1.f);
+        Text(i18n::T(i18n::kKeysEscHint), x0, fy + 6 * s, cw, 18 * s, 10.5f * s,
+             Brush(kColorText3));
+        D2D1_RECT_F btn = D2D1::RectF(x0, fy + 26 * s, x1, fy + 26 * s + 32 * s);
+        FillRoundRect(btn, 8 * s, Brush(D2D1::ColorF(0x1B1E23)));
+        if (hover_ == kSetKeysReset) FillRoundRect(btn, 8 * s, Brush(kColorHover));
+        StrokeRoundRect(btn, 8 * s, Brush(kColorBorder), 1.f);
+        Text(i18n::T(i18n::kKeysResetAll), btn.left, btn.top, x1 - x0, 32 * s, 12.5f * s,
+             Brush(kColorText2), 2);
+        AddHit(btn, kSetKeysReset);
+    }
 }
 
 void App::RequestThumbs() {

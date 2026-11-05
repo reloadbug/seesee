@@ -16,6 +16,8 @@
 #include <string>
 #include <vector>
 
+#include "i18n.h"
+#include "keys.h"
 #include "loader.h"
 #include "settings.h"
 
@@ -28,6 +30,11 @@ public:
     int Run(HINSTANCE hInst, const std::wstring& initialFile, bool benchMode,
             const std::wstring& shotPath);
 
+    // 截图验收用：打开设置面板（tab: 0 通用 1 快捷键 2 关于；cap = 模拟正在捕获键位）
+    void RequestPanel(int tab, bool capture);
+    // 截图验收用：临时覆盖界面语言（0 自动 1 中文 2 English，不写盘）
+    void RequestLanguage(int v);
+
 private:
     enum BtnId {
         kBtnNone = 0,
@@ -38,12 +45,33 @@ private:
         kBtnFit,
         kBtnActual,
         kBtnFullscreen,
+        kBtnSettings,
         kBtnMin,
         kBtnMax,
         kBtnClose,
         kBtnArrowLeft,
         kBtnArrowRight,
         kBtnCount,
+
+        // 设置面板内的控件
+        kSetClose = 200,
+        kSetTabGeneral,
+        kSetTabKeys,
+        kSetTabAbout,
+        kSetLangAuto,
+        kSetLangZh,
+        kSetLangEn,
+        kSetTgFilmstrip,
+        kSetTgHideChrome,
+        kSetTgWheelNav,
+        kSetTgUpscale,
+        kSetZoomOut,
+        kSetZoomIn,
+        kSetZoomReset,
+        kSetRegister,
+        kSetKeysReset,
+        kSetKeyBase = 400,  // kSetKeyBase + keys::Cmd
+
         kBtnThumbBase = 1000  // 胶片条：kBtnThumbBase + 索引
     };
 
@@ -132,6 +160,16 @@ private:
     float ChromeAlpha() const;
     void UpdateIdle();
 
+    // 设置面板
+    float PanelWidth() const;
+    void DrawSettingsPanel();
+    void ToggleSettings();
+    void OnPanelClick(int id);
+    void SetLanguage(int v);
+    void RunCommand(int cmd);          // 执行 keys::Cmd（键位与面板共用）
+    void CaptureKey(UINT vk, bool ctrl, bool shift, bool alt);  // 设置面板里捕获新键位
+    void ShowToast(const std::wstring& text);
+
     // ---- 状态 ----
     HINSTANCE hinst_ = nullptr;
     HWND hwnd_ = nullptr;
@@ -187,6 +225,19 @@ private:
     bool panning_ = false;
     POINT panStart_{};
     D2D1_POINT_2F panOffsetStart_{};
+
+    // 设置面板状态
+    bool settingsOpen_ = false;
+    int settingsTab_ = 0;
+    float setScroll_ = 0.f;
+    float setScrollMax_ = 0.f;
+    D2D1_RECT_F panelRc_{};
+    int captureCmd_ = -1;              // >=0：正在等用户按下新键位
+    std::wstring toast_;               // 面板底部一行反馈
+    double toastUntil_ = 0.0;
+    int pendingPanel_ = -1;            // --panel：截图前自动打开面板
+    bool pendingCapture_ = false;
+    int pendingLang_ = -1;             // --lang：截图用的临时语言覆盖
 
     std::vector<Hit> hits_;
 
