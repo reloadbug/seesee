@@ -107,6 +107,7 @@ private:
 
     // 文本 / 图形  (align: 0=左 1=右 2=居中)
     IDWriteTextFormat* Format(float sizePx, bool mono = false, int align = 0);
+    float MeasureText(const std::wstring& s, float sizePx, bool mono);
     void Text(const std::wstring& s, float x, float y, float w, float h, float sizePx,
               ID2D1Brush* brush, int align = 0);
     ID2D1SolidColorBrush* Brush(D2D1_COLOR_F c);

@@ -925,6 +925,20 @@ IDWriteTextFormat* App::Format(float sizePx, bool mono, int align) {
     return fmt.Get();
 }
 
+float App::MeasureText(const std::wstring& s, float sizePx, bool mono) {
+    if (!dwrite_ || s.empty()) return 0.f;
+    IDWriteTextFormat* fmt = Format(sizePx, mono, 0);
+    if (!fmt) return 0.f;
+    ComPtr<IDWriteTextLayout> layout;
+    if (FAILED(dwrite_->CreateTextLayout(s.c_str(), (UINT32)s.size(), fmt, 4096.f, 4096.f,
+                                                &layout)) ||
+        !layout)
+        return 0.f;
+    DWRITE_TEXT_METRICS m{};
+    if (FAILED(layout->GetMetrics(&m))) return 0.f;
+    return m.width;
+}
+
 void App::Text(const std::wstring& s, float x, float y, float w, float h, float sizePx,
                ID2D1Brush* brush, int align) {
     if (!rt_ || s.empty() || !brush) return;
@@ -1296,14 +1310,19 @@ void App::DrawInfoPill() {
     std::wstring idx = idxBuf;
 
     const float pillH = 28 * s;
-    const float pillW = 260 * s;
+    const float padX = 12 * s;
+    const float gap = 16 * s;
+    const float textSize = 11.5f * s;
+    const float wInfo = MeasureText(info, textSize, false);
+    const float wIdx = MeasureText(idx, textSize, true);
+    const float pillW = padX * 2 + wInfo + gap + wIdx;
     const float px = 16 * s;
     const float py = h - 14 * s - pillH;
 
     D2D1_RECT_F pill = D2D1::RectF(px, py, px + pillW, py + pillH);
     FillRoundRect(pill, pillH * 0.5f, Brush(D2D1::ColorF(0x1B1E23, 0.9f)));
-    Text(info, px + 12 * s, py, pillW - 80 * s, pillH, 11.5f * s, Brush(kColorText2));
-    Text(idx, px + pillW - 76 * s, py, 64 * s, pillH, 11.5f * s, Brush(kColorText3), true);
+    Text(info, px + padX, py, wInfo + 2 * s, pillH, textSize, Brush(kColorText2));
+    Text(idx, px + padX + wInfo + gap, py, wIdx + 2 * s, pillH, textSize, Brush(kColorText3), 0);
 }
 
 void App::DrawArrows() {
