@@ -1,4 +1,4 @@
-# seesee / 看看 — 任务计划与里程碑
+﻿# seesee / 看看 — 任务计划与里程碑
 
 > 版本 v0.1 · 2026-11-06
 
@@ -46,7 +46,7 @@ seesee/
 ├─ tools/             一次性探针与生成脚本（不含在产品里）
 ├─ docs/              需求 / 计划 / UI 规范
 ├─ build.ps1          一键构建（vcvars64 → cmake → ninja）
-└─ bin/seesee.exe     产物（单文件，765 KB）
+└─ bin/seesee.exe     产物（单文件，766 KB）
 ```
 
 ## 3. 线程模型
