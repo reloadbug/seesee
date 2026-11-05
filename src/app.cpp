@@ -309,6 +309,7 @@ bool App::OpenPath(const std::wstring& path, bool keepView) {
     errorText_.clear();
     ResetViewToFit();
     UpdateRequests();
+    UpdateCaption();
     tOpen_ = NowMs();
     InvalidateRect(hwnd_, nullptr, FALSE);
     return true;
@@ -332,11 +333,26 @@ void App::GoTo(int64_t index) {
     requestedLevel_ = (CurrentZoom() >= 0.95) ? kLevelFull : kLevelFit;
     ResetViewToFit();
     UpdateRequests();
+    UpdateCaption();
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void App::NextImage() { GoTo((int64_t)curIndex_ + 1); }
 void App::PrevImage() { GoTo((int64_t)curIndex_ - 1); }
+
+void App::UpdateCaption() {
+    if (!hwnd_) return;
+    std::wstring cap = L"看看 SeeSee";
+    const size_t n = loader_.FileCount();
+    if (n > 0) {
+        std::wstring name = FileNameOf(loader_.PathAt(curIndex_));
+        if (!name.empty()) {
+            cap = L"看看 · " + name;
+            if (n > 1) cap += L"  (" + std::to_wstring(curIndex_ + 1) + L"/" + std::to_wstring(n) + L")";
+        }
+    }
+    SetWindowTextW(hwnd_, cap.c_str());
+}
 
 void App::UpdateRequests() {
     if (loader_.FileCount() == 0) return;
@@ -473,7 +489,6 @@ RECT App::AreaRect() const {
     RECT rc{};
     if (!hwnd_) return rc;
     GetClientRect(hwnd_, &rc);
-    rc.top += (LONG)titleH_;
     rc.bottom -= (LONG)StripHeight();
     if (rc.bottom < rc.top + 40) rc.bottom = rc.top + 40;
     return rc;
@@ -588,49 +603,9 @@ void App::ClampOffset() {
 
 LRESULT App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
-        case WM_NCCALCSIZE: {
-            if (wp) {
-                if (fullscreen_) return 0;
-                auto* p = reinterpret_cast<NCCALCSIZE_PARAMS*>(lp);
-                if (IsZoomed(hwnd)) {
-                    // 最大化时贴合工作区，避免边框溢出屏幕
-                    MONITORINFO mi{sizeof(mi)};
-                    if (GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi))
-                        p->rgrc[0] = mi.rcWork;
-                }
-                return 0;
-            }
-            break;
-        }
-
-        case WM_NCHITTEST: {
+        case WM_NCHITTEST:
             if (fullscreen_) return HTCLIENT;
-            POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-            RECT wr{};
-            GetWindowRect(hwnd, &wr);
-            const int b = (int)(6 * dpiScale_);
-            const bool left = pt.x < wr.left + b;
-            const bool right = pt.x >= wr.right - b;
-            const bool top = pt.y < wr.top + b;
-            const bool bottom = pt.y >= wr.bottom - b;
-            if (!IsZoomed(hwnd)) {
-                if (top && left) return HTTOPLEFT;
-                if (top && right) return HTTOPRIGHT;
-                if (bottom && left) return HTBOTTOMLEFT;
-                if (bottom && right) return HTBOTTOMRIGHT;
-                if (left) return HTLEFT;
-                if (right) return HTRIGHT;
-                if (top) return HTTOP;
-                if (bottom) return HTBOTTOM;
-            }
-            POINT c = pt;
-            ScreenToClient(hwnd, &c);
-            if (c.y < (int)titleH_) {
-                if (HitTestScreen(pt) > kBtnNone) return HTCLIENT;
-                return HTCAPTION;
-            }
-            return HTCLIENT;
-        }
+            break;  // 缩放边框 / 拖动 / 双击最大化 / 贴边分屏全部交给系统窗口边框
 
         case WM_ERASEBKGND:
             return 1;
@@ -1154,7 +1129,7 @@ void App::RenderAndBlit() {
 
     DrawImageLayer();
 
-    if (!fullscreen_) DrawTitleBar();
+    if (!fullscreen_) { /* 系统标题栏负责品牌与文件名，客户区不再画 */ }
 
     // 底部控件可淡出（鼠标静止 2.6s 后降到 0，一动即回）
     const float ca = ChromeAlpha();
@@ -1274,7 +1249,7 @@ void App::ApplyUiScale() {
     if (ui > 3.0f) ui = 3.0f;
     dpiScale_ = monitorScale_ * ui;
     if (dpiScale_ < 0.75f) dpiScale_ = 0.75f;
-    titleH_ = fullscreen_ ? 0.f : std::round(34.f * dpiScale_);
+    titleH_ = 0.f;  // 顶部标题栏交给系统窗口边框，客户区不再自绘第二根标题栏
 }
 
 void App::SetUiScale(float v) {
@@ -1317,60 +1292,6 @@ void App::UpdateIdle() {
     if (std::fabs(next - chromeAlpha_) > 0.001f) {
         chromeAlpha_ = next;
         InvalidateRect(hwnd_, nullptr, FALSE);
-    }
-}
-
-void App::DrawTitleBar() {
-    RECT rc{};
-    GetClientRect(hwnd_, &rc);
-    float w = (float)rc.right;
-    float h = titleH_;
-    ID2D1SolidColorBrush* bg = Brush(kColorTitleBg);
-    rt_->FillRectangle(D2D1::RectF(0, 0, w, h), bg);
-    rt_->DrawLine(D2D1::Point2F(0, h - 0.5f), D2D1::Point2F(w, h - 0.5f), Brush(kColorBorder), 1.f);
-
-    // 左侧：品牌点 + 名称 + 文件名
-    float x = 14 * dpiScale_;
-    float cy = h * 0.5f;
-    ID2D1SolidColorBrush* accent = Brush(kColorAccent);
-    rt_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(x + 5 * dpiScale_, cy), 5 * dpiScale_, 5 * dpiScale_),
-                     accent, 1.4f * dpiScale_);
-    x += 16 * dpiScale_;
-    Text(L"看看", x, 0, 46 * dpiScale_, h, 13.5f * dpiScale_, Brush(kColorText));
-    x += 30 * dpiScale_;
-    std::wstring sep = L"·";
-    Text(sep, x, 0, 12 * dpiScale_, h, 13.5f * dpiScale_, Brush(kColorText3));
-    x += 12 * dpiScale_;
-
-    std::wstring name;
-    if (loader_.FileCount() > 0) name = FileNameOf(loader_.PathAt(curIndex_));
-    if (name.empty()) name = L"看看 SeeSee";
-    float avail = w - x - 140 * dpiScale_;
-    Text(name, x, 0, std::max<float>(20, avail), h, 13.5f * dpiScale_, Brush(kColorText2));
-
-    // 右侧窗口按钮
-    float bw = 46 * dpiScale_;
-    float bx = w - bw * 3;
-    struct { int id; int kind; } btns[3] = {{kBtnMin, 0}, {kBtnMax, 1}, {kBtnClose, 2}};
-    for (int i = 0; i < 3; ++i) {
-        D2D1_RECT_F br = D2D1::RectF(bx, 0, bx + bw, h);
-        bool hot = (hover_ == btns[i].id);
-        if (hot) rt_->FillRectangle(br, Brush(btns[i].id == kBtnClose ? kColorClose : kColorHover));
-        ID2D1SolidColorBrush* fg = Brush(hot && btns[i].id == kBtnClose ? D2D1::ColorF(0xFFFFFF) : kColorText2);
-        float cx = bx + bw * 0.5f;
-        float g = 4.5f * dpiScale_;
-        if (btns[i].kind == 0) {
-            rt_->DrawLine(D2D1::Point2F(cx - g, cy), D2D1::Point2F(cx + g, cy), fg, 1.1f * dpiScale_);
-        } else if (btns[i].kind == 1) {
-            rt_->DrawRectangle(D2D1::RectF(cx - g, cy - g, cx + g, cy + g), fg, 1.1f * dpiScale_);
-        } else {
-            rt_->DrawLine(D2D1::Point2F(cx - g, cy - g), D2D1::Point2F(cx + g, cy + g), fg,
-                          1.1f * dpiScale_);
-            rt_->DrawLine(D2D1::Point2F(cx + g, cy - g), D2D1::Point2F(cx - g, cy + g), fg,
-                          1.1f * dpiScale_);
-        }
-        AddHit(br, btns[i].id);
-        bx += bw;
     }
 }
 
@@ -1735,6 +1656,8 @@ void App::ReportBench() {
     double procMs = tProcFirstImage_;
     double preMain = procMs - (tFirstImage_ - tStart_);
     wchar_t buf[1024];
+    RECT crc{};
+    GetClientRect(hwnd_, &crc);
     swprintf_s(buf,
                L"[bench] 冷启动 → 首张图片上屏: %.1f ms\n"
                L"  启动墙钟分帧:\n"
@@ -1747,13 +1670,14 @@ void App::ReportBench() {
                L"  并行段（与建 D2D 设备重叠）:\n"
                L"    读文件 %.1f ms / WIC 解码 %.1f ms / 上传 GPU %.1f ms\n"
                L"  稳态每帧（平移 30 帧平均）: %.1f ms  (~%.0f fps)\n"
-               L"  界面缩放 %.2fx（显示器 %.0f%%）/ 胶片条 %.0f px / 窗口 %ld×%ld\n",
+               L"  界面缩放 %.2fx（显示器 %.0f%%）/ 胶片条 %.0f px / 窗口 %ld×%ld 客户区 %ld×%ld\n",
                procMs, preMain, tFactory_ - tStart_, tWindowCreated_ - tFactory_,
                benchFileCount_, tOpen_ - tWindowCreated_, firstPaintMs_, deviceMs_, drawMs_,
                std::max<double>(0, tFirstImage_ - tWindowShown_ - readMs_ - decMs_ - uploadMs_),
                readMs_, decMs_, uploadMs_, frameMs_, frameMs_ > 0 ? 1000.0 / frameMs_ : 0.0,
                dpiScale_, monitorScale_ * 100.0, StripHeight(),
-               (long)(winRect_.right - winRect_.left), (long)(winRect_.bottom - winRect_.top));
+               (long)(winRect_.right - winRect_.left), (long)(winRect_.bottom - winRect_.top),
+               (long)crc.right, (long)crc.bottom);
     (void)scanMs_;
     OutputDebugStringW(buf);
     FILE* f = nullptr;

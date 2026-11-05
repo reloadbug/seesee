@@ -98,7 +98,7 @@ private:
     void MeasureFrames();
     void DrawImageLayer();
     void DrawChrome();
-    void DrawTitleBar();
+    void UpdateCaption();
     void DrawBottomBar();
     void DrawInfoPill();
     void DrawArrows();
@@ -173,7 +173,7 @@ private:
 
     float dpiScale_ = 1.0f;      // 实际界面缩放 = 显示器 DPI × 用户 uiScale
     float monitorScale_ = 1.0f;  // 显示器 DPI / 96
-    float titleH_ = 34.f;
+    float titleH_ = 0.f;  // 保留占位，恒为 0（标题栏交给系统边框）
     float chromeAlpha_ = 1.f;    // 底部控件不透明度（空闲淡出）
     double lastInputMs_ = 0;
     bool idleTimer_ = false;
