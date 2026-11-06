@@ -1,4 +1,4 @@
-# seesee / 看看 — UI 设计规范
+﻿# seesee / 看看 — UI 设计规范
 
 > 版本 v0.1 · 2026-11-06 · 可执行参考：[`prototype/ui-mockup.html`](../prototype/ui-mockup.html)
 
@@ -206,3 +206,9 @@
 - 成功：写 HKCU（ProgID + OpenWithProgids + Capabilities + RegisteredApplications）→ `SHChangeNotify` → 直接打开系统「默认应用」（`ms-settings:defaultapps?registeredAppUser=SeeSee`），toast「已注册，请在系统「默认应用」里确认」，并自动打开设置面板。
 - 失败（注册表被安全软件拦截）：把生成的 `seesee-assoc.reg` 路径记入 `lastRegFile_`、`regBlocked_ = true`，打开设置面板→通用页，在「设为默认看图工具」下方追加：引导文案（`kRegBlockedHint`）+ 「导入关联文件」主按钮（`ShellExecuteW` 打开 .reg，合并确认是系统行为）+ 「打开系统设置」次按钮。
 - 相关文案：`kRegBlockedHint` / `kImportRegFile` / `kOpenSystemSettings` / `kSetDefaultDone`。
+## 14. 单反 RAW（v0.3.2）
+
+- 支持扩展名（29 种）：`cr2 cr3 crw nef nrw arw srf sr2 dng orf rw2 raf pef srw rwl 3fr fff iiq mos mrw x3f dcr kdc mef raw erf rwz gpr braw`。
+- 解码顺序：① 先让 WIC 按普通图片解（装了厂商 / 微软 RAW 扩展就能直接解 RAW）→ ② 不行则扫描文件里的 JPEG 流（`FF D8 FF` … `FF D9`），按长度从大到小逐个尝试解码，**第一个能解出画面的就是预览图**（RAW 里的无损 JPEG 原始数据也会被扫到，但 WIC 会拒绝，正好跳过）。
+- 语义标记：`DecodedImage::fromPreview` → 缓存条目 `preview` → 信息胶囊显示 `RAW 预览`。
+- 性能：整文件读入 + 一趟线性扫描（~10 ms / 50 MB）+ DCT 缩放解码预览，比去马赛克快一个数量级；缩略图走同一路径。

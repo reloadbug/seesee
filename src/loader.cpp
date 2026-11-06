@@ -1,6 +1,8 @@
 // seesee / 看看 — 图片装载器实现
 #include "loader.h"
 
+#include "rawdecode.h"
+
 #include <algorithm>
 #include <cwctype>
 #include <cmath>
@@ -52,6 +54,11 @@ int NaturalCompare(const std::wstring& a, const std::wstring& b) {
 const wchar_t* kExtensions[] = {
     L".jpg", L".jpeg", L".jpe", L".jfif", L".png", L".bmp", L".dib", L".gif",
     L".webp", L".tif", L".tiff", L".ico", L".jxl", L".avif", L".heic", L".heif",
+    // 单反 / 微单 RAW（走内嵌 JPEG 预览，见 rawdecode.cpp）
+    L".cr2", L".cr3", L".crw", L".nef", L".nrw", L".arw", L".srf", L".sr2",
+    L".dng", L".orf", L".rw2", L".raf", L".pef", L".srw", L".rwl", L".3fr",
+    L".fff", L".iiq", L".mos", L".mrw", L".x3f", L".dcr", L".kdc", L".mef",
+    L".raw", L".erf", L".rwz", L".gpr", L".braw",
 };
 
 bool ReadAllBytes(const std::wstring& path, std::vector<uint8_t>& out) {
@@ -326,36 +333,19 @@ void Loader::WorkerLoop() {
     }
 }
 
-void Loader::Decode(uint32_t index, const std::wstring& path, int level, uint32_t fitW,
-                    uint32_t fitH, DecodedImage& out) {
-    out.index = index;
-    out.level = level;
-
-    IWICImagingFactory* factory = ThreadFactory();
-    if (!factory) {
-        out.error = L"WIC 初始化失败";
-        return;
-    }
-
-    // 1) 一次性读进内存 —— 比让 WIC 直接读文件更快，且避免多次 IO
-    double t0 = NowMs();
-    std::vector<uint8_t> fileBytes;
-    if (!ReadAllBytes(path, fileBytes)) {
-        out.error = L"无法读取文件";
-        return;
-    }
-    out.readMs = NowMs() - t0;
-
+// 把一段内存里的图片数据解成像素 —— 普通格式与 RAW 内嵌 JPEG 共用同一条路径
+static bool DecodeFromMemory(IWICImagingFactory* factory, const uint8_t* data, size_t size,
+                             int level, uint32_t fitW, uint32_t fitH, DecodedImage& out) {
     double t1 = NowMs();
     ComPtr<IWICStream> stream;
     if (FAILED(factory->CreateStream(&stream))) {
         out.error = L"创建流失败";
-        return;
+        return false;
     }
-    // InitializeFromMemory 不拷贝，fileBytes 在本函数内保持有效
-    if (FAILED(stream->InitializeFromMemory(fileBytes.data(), (DWORD)fileBytes.size()))) {
+    // InitializeFromMemory 不拷贝，data 在调用方作用域内保持有效
+    if (FAILED(stream->InitializeFromMemory(const_cast<BYTE*>(data), (DWORD)size))) {
         out.error = L"内存流初始化失败";
-        return;
+        return false;
     }
 
     ComPtr<IWICBitmapDecoder> decoder;
@@ -363,20 +353,20 @@ void Loader::Decode(uint32_t index, const std::wstring& path, int level, uint32_
                                                   WICDecodeMetadataCacheOnDemand, &decoder);
     if (FAILED(hr) || !decoder) {
         out.error = L"解码器不支持该格式";
-        return;
+        return false;
     }
 
     ComPtr<IWICBitmapFrameDecode> frame;
     hr = decoder->GetFrame(0, &frame);
     if (FAILED(hr) || !frame) {
         out.error = L"读取图片帧失败";
-        return;
+        return false;
     }
 
     UINT sw = 0, sh = 0;
     if (FAILED(frame->GetSize(&sw, &sh)) || sw == 0 || sh == 0) {
         out.error = L"无法获取尺寸";
-        return;
+        return false;
     }
 
     out.orientation = ReadOrientation(frame.Get());
@@ -450,25 +440,25 @@ void Loader::Decode(uint32_t index, const std::wstring& path, int level, uint32_
                                     WICBitmapDitherTypeNone, nullptr, 0,
                                     WICBitmapPaletteTypeCustom))) {
             out.error = L"像素格式转换失败";
-            return;
+            return false;
         }
         if (dw != sw || dh != sh) {
             ComPtr<IWICBitmapScaler> scaler;
             if (FAILED(factory->CreateBitmapScaler(&scaler)) ||
                 FAILED(scaler->Initialize(conv.Get(), dw, dh, WICBitmapInterpolationModeFant))) {
                 out.error = L"缩放失败";
-                return;
+                return false;
             }
             pixels.resize((size_t)dw * dh * 4);
             if (FAILED(scaler->CopyPixels(nullptr, dw * 4, (UINT)pixels.size(), pixels.data()))) {
                 out.error = L"像素读取失败";
-                return;
+                return false;
             }
         } else {
             pixels.resize((size_t)dw * dh * 4);
             if (FAILED(conv->CopyPixels(nullptr, dw * 4, (UINT)pixels.size(), pixels.data()))) {
                 out.error = L"像素读取失败";
-                return;
+                return false;
             }
         }
     }
@@ -485,4 +475,60 @@ void Loader::Decode(uint32_t index, const std::wstring& path, int level, uint32_
     out.h = dh;
     out.pixels = std::move(pixels);
     out.ok = true;
+    return true;
 }
+
+void Loader::Decode(uint32_t index, const std::wstring& path, int level, uint32_t fitW,
+                    uint32_t fitH, DecodedImage& out) {
+    out.index = index;
+    out.level = level;
+
+    IWICImagingFactory* factory = ThreadFactory();
+    if (!factory) {
+        out.error = L"WIC 初始化失败";
+        return;
+    }
+
+    // 一次性读进内存 —— 比让 WIC 直接读文件更快，且避免多次 IO
+    double t0 = NowMs();
+    std::vector<uint8_t> fileBytes;
+    if (!ReadAllBytes(path, fileBytes)) {
+        out.error = L"无法读取文件";
+        return;
+    }
+    out.readMs = NowMs() - t0;
+
+    std::wstring ext;
+    {
+        const size_t dot = path.find_last_of(L'.');
+        if (dot != std::wstring::npos) ext = path.substr(dot);
+    }
+
+    // 1) 先让 WIC 按普通图片解 —— 装了厂商 / 微软 RAW 扩展时这里就能直接解 RAW
+    if (DecodeFromMemory(factory, fileBytes.data(), fileBytes.size(), level, fitW, fitH, out)) return;
+
+    // 2) RAW 兜底：抠出文件里内嵌的 JPEG 预览（半尺寸到全尺寸）逐个试
+    if (raw::IsRawExtension(ext)) {
+        const double tScan0 = NowMs();
+        const std::vector<raw::JpegRange> candidates =
+            raw::FindEmbeddedJpegs(fileBytes.data(), fileBytes.size(), 8);
+        const double scanMs = NowMs() - tScan0;
+        for (const raw::JpegRange& c : candidates) {
+            DecodedImage tmp;
+            tmp.index = index;
+            tmp.level = level;
+            if (DecodeFromMemory(factory, fileBytes.data() + c.offset, c.length, level, fitW, fitH,
+                                 tmp)) {
+                tmp.readMs = out.readMs;
+                tmp.decodeMs += scanMs;
+                tmp.fromPreview = true;
+                out = std::move(tmp);
+                return;
+            }
+        }
+        out.error = L"这个 RAW 里没有可用的 JPEG 预览";
+        return;
+    }
+    // 其它格式：沿用第一次解码失败的错误信息
+}
+

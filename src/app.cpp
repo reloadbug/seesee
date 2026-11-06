@@ -811,6 +811,7 @@ void App::OnDecodedReady() {
         e.decH = img->h;
         e.level = img->level;
         e.lastUse = ++useCounter_;
+        e.preview = img->fromPreview;
         cache_[key] = std::move(e);
 
         if (img->index == curIndex_) {
@@ -1789,11 +1790,13 @@ void App::DrawInfoPill() {
 
     std::wstring path = loader_.PathAt(curIndex_);
     uint32_t sw = 0, sh = 0;
+    bool preview = false;
     for (int lvl = 0; lvl < kLevelCount && sw == 0; ++lvl) {
         auto it = cache_.find(((uint64_t)curIndex_ << 2) | (uint64_t)lvl);
         if (it != cache_.end()) {
             sw = it->second.srcW;
             sh = it->second.srcH;
+            preview = it->second.preview;
         }
     }
     if (sw == 0) return;
@@ -1805,6 +1808,10 @@ void App::DrawInfoPill() {
     info += ExtUpper(path);
     info += L"  ·  ";
     info += HumanSize(loader_.SizeAt(curIndex_));
+    if (preview) {  // RAW：显示的是文件内嵌的 JPEG 预览，标出来免得误会分辨率
+        info += L"  ·  ";
+        info += i18n::T(i18n::kRawPreview);
+    }
 
     wchar_t idxBuf[64];
     swprintf_s(idxBuf, L"%u / %zu", curIndex_ + 1, loader_.FileCount());
@@ -2321,7 +2328,7 @@ void App::DrawSettingsPanel() {
             yy += h;
         }
     } else {
-        Text(std::wstring(i18n::T(i18n::kAppName)) + L" · " + i18n::T(i18n::kVersion) + L" 0.3.1",
+        Text(std::wstring(i18n::T(i18n::kAppName)) + L" · " + i18n::T(i18n::kVersion) + L" 0.3.2",
              x0, yy, cw, 28 * s, 14 * s, Brush(kColorText));
         yy += 30 * s;
         Text(i18n::T(i18n::kAboutTagline), x0, yy, cw, 22 * s, 12 * s, Brush(kColorText2));
@@ -2393,7 +2400,10 @@ void App::ShowOpenDialog() {
         return;
 
     COMDLG_FILTERSPEC filters[] = {
-        {L"图片文件", L"*.jpg;*.jpeg;*.jpe;*.jfif;*.png;*.bmp;*.dib;*.gif;*.webp;*.tif;*.tiff;*.ico;*.avif;*.heic"},
+        {L"图片文件",
+         L"*.jpg;*.jpeg;*.jpe;*.jfif;*.png;*.bmp;*.dib;*.gif;*.webp;*.tif;*.tiff;*.ico;*.avif;*.heic;"
+         L"*.cr2;*.cr3;*.crw;*.nef;*.nrw;*.arw;*.srf;*.sr2;*.dng;*.orf;*.rw2;*.raf;*.pef;*.srw;"
+         L"*.rwl;*.3fr;*.fff;*.iiq;*.mos;*.mrw;*.x3f;*.dcr;*.kdc;*.mef;*.raw;*.erf;*.rwz;*.gpr"},
         {L"所有文件", L"*.*"},
     };
     dlg->SetFileTypes(2, filters);

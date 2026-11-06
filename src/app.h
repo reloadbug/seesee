@@ -89,6 +89,7 @@ private:
         uint32_t decW = 0, decH = 0;
         int level = kLevelFit;
         uint64_t lastUse = 0;
+        bool preview = false;  // RAW：当前显示的是文件内嵌 JPEG 预览
     };
 
     // 生命周期

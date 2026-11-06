@@ -86,6 +86,7 @@ enum Str : int {
     kDeletedFile,
     kMenuSettings,
     kMenuExit,
+    kRawPreview,
 
     kCount
 };

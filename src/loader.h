@@ -49,6 +49,7 @@ struct DecodedImage {
     std::vector<uint8_t> pixels;  // BGRA (premultiplied)
     double readMs = 0, decodeMs = 0, orientMs = 0;
     bool ok = false;
+    bool fromPreview = false;  // RAW：用的是文件内嵌的 JPEG 预览
     std::wstring error;
 };
 

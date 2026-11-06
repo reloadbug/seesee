@@ -27,6 +27,7 @@
 | **M6 UI 与原型对齐** | 高 DPI 适配（`dpiScale_` 真实初始化）、底部胶片条（±40 预取、点击跳转）、控件 2.6 s 自动淡出、右滑设置面板 | ✅ 完成（v0.2：DPI / 胶片条 / 淡出；v0.3：设置面板） |
 | **M6.5 多语言与自定义快捷键** | `src/i18n.cpp` 文案表（中/英，跟随系统）、`src/keys.cpp` 键位表（默认值 / 覆盖 / 冲突解绑 / 持久化）、设置面板三个标签页 | ✅ 完成（v0.3） |
 | **M6.6 右键菜单与图片操作** | 系统原生 TrackPopupMenu（菜单 id = 命令 + 1）、复制图片（CF_DIBV5）/ 复制·剪切文件（CF_HDROP + Preferred DropEffect）/ 复制路径 / 资源管理器定位 / 默认程序编辑 / 移到回收站（FOF_ALLOWUNDO）、关联被拦时改为面板内两步引导（不再弹 MessageBox） | ✅ 完成（v0.3.1） |
+| **M6.7 单反 RAW 支持** | src/rawdecode.cpp 扫描文件内嵌 JPEG（SOI…EOI，按大小排序 + 逐个试解码跳过无损 raw 流），WIC 解不了就回退预览；29 种 RAW 扩展名；信息胶囊标注「RAW 预览」 | ✅ 完成（v0.3.2） |
 | **M7 v1.0 收尾** | 图标/清单/版本信息、异常与空目录态、README、安装说明、性能回归脚本、内存优化（后备缓冲与缓存预算） | ⏳ 进行中 |
 | **M8 v2 照片管理** | 目录树、标签评分、筛选、批量操作 | 🔭 规划中 |
 
@@ -38,6 +39,7 @@ seesee/
 │  ├─ main.cpp        入口：命令行解析（图片路径 / --bench / --shot / --panel / --lang / --register）
 │  ├─ app.h/.cpp      窗口、消息循环、渲染（D2D 软件 DC 目标 + DIB）、输入、缓存、设置面板、基准
 │  ├─ loader.h/.cpp   目录扫描（自然排序）+ 线程池 + WIC 解码（DCT 缩放 / EXIF 方向 / 预取 / 缩略图）
+│  ├─ rawdecode.h/.cpp 单反 RAW：抠出文件内嵌 JPEG 预览再交给 WIC
 │  ├─ settings.h/.cpp 设置（%LOCALAPPDATA%\SeeSee\settings.ini，含 language / keybind）
 │  ├─ i18n.h/.cpp     界面文案表（简体中文 / English，跟随系统）
 │  ├─ keys.h/.cpp     键位表（默认值 / 用户覆盖 / 冲突解绑 / 持久化 / 键名格式化）
@@ -47,7 +49,7 @@ seesee/
 ├─ tools/             一次性探针与生成脚本（不含在产品里）
 ├─ docs/              需求 / 计划 / UI 规范
 ├─ build.ps1          一键构建（vcvars64 → cmake → ninja）
-└─ bin/seesee.exe     产物（单文件，778 KB）
+└─ bin/seesee.exe     产物（单文件，787 KB）
 ```
 
 ## 3. 线程模型

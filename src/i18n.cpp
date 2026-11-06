@@ -88,6 +88,7 @@ const Row kTable[] = {
     {kDeletedFile, L"已移到回收站", L"Moved to Recycle Bin"},
     {kMenuSettings, L"设置…", L"Settings…"},
     {kMenuExit, L"退出", L"Exit"},
+    {kRawPreview, L"RAW 预览", L"RAW preview"},
 };
 
 int g_setting = 0;   // 0 = 跟随系统

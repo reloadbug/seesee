@@ -120,6 +120,11 @@ const std::vector<std::wstring>& Extensions() {
     static const std::vector<std::wstring> exts = {
         L".jpg", L".jpeg", L".jpe", L".jfif",  L".png",  L".bmp",  L".gif", L".tif",
         L".tiff", L".ico", L".webp", L".avif", L".heic", L".heif", L".jxl",
+        // 单反 / 微单 RAW
+        L".cr2", L".cr3", L".crw", L".nef", L".nrw", L".arw", L".srf", L".sr2",
+        L".dng", L".orf", L".rw2", L".raf", L".pef", L".srw", L".rwl", L".3fr",
+        L".fff", L".iiq", L".mos", L".mrw", L".x3f", L".dcr", L".kdc", L".mef",
+        L".raw", L".erf", L".rwz", L".gpr", L".braw",
     };
     return exts;
 }
