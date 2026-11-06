@@ -73,6 +73,7 @@ enum Str : int {
     kCmdReveal,
     kCmdEdit,
     kCmdDelete,
+    kCmdPlayPause,
 
     // 关联引导 / 操作结果
     kRegBlockedHint,
@@ -87,6 +88,7 @@ enum Str : int {
     kMenuSettings,
     kMenuExit,
     kRawPreview,
+    kAnimTag,      // 信息胶囊里的「动图」标记
 
     kCount
 };

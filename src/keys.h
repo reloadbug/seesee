@@ -35,6 +35,7 @@ enum Cmd : int {
     kReveal,
     kEdit,
     kDelete,
+    kPlayPause,
     kCount
 };
 

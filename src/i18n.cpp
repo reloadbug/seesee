@@ -76,6 +76,7 @@ const Row kTable[] = {
     {kCmdReveal, L"在资源管理器中显示", L"Show in Explorer"},
     {kCmdEdit, L"用默认程序编辑", L"Edit in default app"},
     {kCmdDelete, L"移到回收站", L"Move to Recycle Bin"},
+    {kCmdPlayPause, L"动图播放/暂停", L"Play / pause animation"},
     {kRegBlockedHint, L"系统阻止了自动写入，请点下方「导入关联文件」",
      L"Automatic registration was blocked - use \"Import association file\" below"},
     {kImportRegFile, L"导入关联文件", L"Import association file"},
@@ -89,6 +90,7 @@ const Row kTable[] = {
     {kMenuSettings, L"设置…", L"Settings…"},
     {kMenuExit, L"退出", L"Exit"},
     {kRawPreview, L"RAW 预览", L"RAW preview"},
+    {kAnimTag, L"动图", L"Animated"},
 };
 
 int g_setting = 0;   // 0 = 跟随系统

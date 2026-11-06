@@ -1,4 +1,4 @@
-﻿// seesee / 看看 — 主窗口与渲染实现
+// seesee / 看看 — 主窗口与渲染实现
 #include "app.h"
 #include "assoc.h"
 
@@ -27,6 +27,7 @@ namespace {
 const wchar_t* kClassName = L"SeeSeeMainWindow";
 const UINT WM_APP_DECODED = WM_APP + 1;
 const UINT_PTR kIdleTimerId = 1;
+const UINT_PTR kAnimTimerId = 2;
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -139,6 +140,13 @@ int App::Run(HINSTANCE hInst, const std::wstring& initialFile, bool benchMode,
         {
             std::lock_guard<std::mutex> lk(pendingMtx_);
             pending_.push_back(std::move(img));
+        }
+        if (hwnd_) PostMessageW(hwnd_, WM_APP_DECODED, 0, 0);
+    });
+    loader_.SetAnimSink([this](std::shared_ptr<AnimationData> anim) {
+        {
+            std::lock_guard<std::mutex> lk(pendingMtx_);
+            pendingAnim_.push_back(std::move(anim));
         }
         if (hwnd_) PostMessageW(hwnd_, WM_APP_DECODED, 0, 0);
     });
@@ -312,6 +320,7 @@ bool App::OpenPath(const std::wstring& path, bool keepView) {
     curIndex_ = idx;
     haveImage_ = false;
     errorText_.clear();
+    ClearAnimation();  // 换目录/换图，动图状态作废
     ResetViewToFit();
     UpdateRequests();
     UpdateCaption();
@@ -335,6 +344,7 @@ void App::GoTo(int64_t index) {
     if (index >= (int64_t)n) index = (int64_t)n - 1;
     if ((uint32_t)index == curIndex_ && haveImage_) return;
     curIndex_ = (uint32_t)index;
+    ClearAnimation();  // 翻页了，上一张的动图帧作废
     requestedLevel_ = (CurrentZoom() >= 0.95) ? kLevelFull : kLevelFit;
     ResetViewToFit();
     UpdateRequests();
@@ -396,6 +406,7 @@ void App::RunCommand(int cmd) {
         case keys::kReveal: RevealInExplorer(); break;
         case keys::kEdit: EditWithDefaultApp(); break;
         case keys::kDelete: DeleteCurrentFile(); break;
+        case keys::kPlayPause: ToggleAnimPlay(); break;
         default: break;
     }
 }
@@ -749,6 +760,13 @@ void App::UpdateRequests() {
     loader_.Request(curIndex_, level, 0);
     if (level == kLevelFull) loader_.Request(curIndex_, kLevelFit, 0);
 
+    // 动图：当前这张若是 GIF / 动画 WebP，顺手把全部帧也请求了（最低优先级）
+    if (!animRequested_ && MightBeAnimated(loader_.PathAt(curIndex_))) {
+        animRequested_ = true;
+        loader_.RequestAnimation(curIndex_, (uint32_t)std::max<LONG>(1, area.right - area.left),
+                                 (uint32_t)std::max<LONG>(1, area.bottom - area.top), 2);
+    }
+
     for (int i = 1; i <= cfg.preloadNext; ++i) {
         if (curIndex_ + i < loader_.FileCount()) loader_.Request(curIndex_ + i, kLevelFit, 1);
     }
@@ -762,9 +780,51 @@ void App::UpdateRequests() {
 
 void App::OnDecodedReady() {
     std::vector<std::shared_ptr<DecodedImage>> items;
+    std::vector<std::shared_ptr<AnimationData>> anims;
     {
         std::lock_guard<std::mutex> lk(pendingMtx_);
         items.swap(pending_);
+        anims.swap(pendingAnim_);
+    }
+    if (!anims.empty()) {
+        for (auto& a : anims) {
+            if (!a) continue;
+            if (a->index != curIndex_) continue;  // 已经翻页了，丢掉
+            if (!a->ok || a->frames.size() < 2) continue;  // 解不出动图就保持静态图
+            if (!EnsureDevice()) continue;
+
+            std::vector<ComPtr<ID2D1Bitmap>> bmps;
+            std::vector<int> delays;
+            bmps.reserve(a->frames.size());
+            bool failed = false;
+            for (auto& f : a->frames) {
+                ComPtr<ID2D1Bitmap> bmp;
+                HRESULT hr = rt_->CreateBitmap(
+                    D2D1::SizeU(a->w, a->h), f.pixels.data(), a->w * 4,
+                    D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
+                                                             D2D1_ALPHA_MODE_PREMULTIPLIED)),
+                    &bmp);
+                if (FAILED(hr) || !bmp) {
+                    failed = true;
+                    break;
+                }
+                bmps.push_back(bmp);
+                delays.push_back(f.delayMs);
+            }
+            if (failed || bmps.size() < 2) continue;
+
+            animBmps_ = std::move(bmps);
+            animDelays_ = std::move(delays);
+            animIndex_ = a->index;
+            animSrcW_ = a->srcW;
+            animSrcH_ = a->srcH;
+            animFrameW_ = a->w;
+            animFrameH_ = a->h;
+            animFrame_ = 0;
+            animPlaying_ = true;
+            StartAnimPlayback();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
     }
     for (auto& img : items) {
         if (!img) continue;
@@ -846,6 +906,53 @@ void App::OnDecodedReady() {
         cache_.erase(worst);
     }
 
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+// ---------------------------------------------------------------- 动图
+
+void App::ClearAnimation() {
+    if (animTimerOn_ && hwnd_) {
+        KillTimer(hwnd_, kAnimTimerId);
+        animTimerOn_ = false;
+    }
+    animBmps_.clear();
+    animDelays_.clear();
+    animIndex_ = 0xFFFFFFFFu;
+    animSrcW_ = animSrcH_ = animFrameW_ = animFrameH_ = 0;
+    animFrame_ = 0;
+    animPlaying_ = true;
+    animRequested_ = false;
+}
+
+bool App::AnimActive() const {
+    return animIndex_ == curIndex_ && animBmps_.size() >= 2 && animFrame_ < animBmps_.size() &&
+           animBmps_[animFrame_];
+}
+
+void App::StartAnimPlayback() {
+    if (!hwnd_ || animBmps_.size() < 2 || !animPlaying_) return;
+    int d = (animFrame_ < animDelays_.size()) ? animDelays_[animFrame_] : 100;
+    SetTimer(hwnd_, kAnimTimerId, (UINT)std::clamp(d, 20, 3000), nullptr);
+    animTimerOn_ = true;
+}
+
+void App::AdvanceAnimFrame() {
+    if (animBmps_.size() < 2) return;
+    animFrame_ = (animFrame_ + 1) % animBmps_.size();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    StartAnimPlayback();  // 每帧延时可以不同，逐帧重排定时器
+}
+
+void App::ToggleAnimPlay() {
+    if (animBmps_.size() < 2) return;
+    animPlaying_ = !animPlaying_;
+    if (animPlaying_) {
+        StartAnimPlayback();
+    } else if (animTimerOn_ && hwnd_) {
+        KillTimer(hwnd_, kAnimTimerId);
+        animTimerOn_ = false;
+    }
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -1015,6 +1122,15 @@ LRESULT App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_TIMER:
             if (wp == kIdleTimerId) {
                 UpdateIdle();
+                return 0;
+            }
+            if (wp == kAnimTimerId) {
+                if (animPlaying_ && animIndex_ == curIndex_ && animBmps_.size() >= 2) {
+                    AdvanceAnimFrame();
+                } else {
+                    KillTimer(hwnd, kAnimTimerId);
+                    animTimerOn_ = false;
+                }
                 return 0;
             }
             break;
@@ -1315,6 +1431,10 @@ bool App::EnsureBackBuffer(int w, int h) {
 void App::DiscardDevice() {
     cache_.clear();
     thumbs_.clear();
+    animBmps_.clear();  // 动图位图也挂在设备上
+    animDelays_.clear();
+    animIndex_ = 0xFFFFFFFFu;
+    animFrame_ = 0;
     layer_.Reset();
     brushes_.clear();
     if (dib_) {
@@ -1452,6 +1572,20 @@ void App::DrawImageLayer() {
         if (it != cache_.end()) e = &it->second;
     }
     if (e) e->lastUse = ++useCounter_;
+
+    // 动图：帧到齐就画动画帧（静态图留在缓存里兜底）
+    if (AnimActive()) {
+        float aspect = animFrameW_ ? (float)animFrameH_ / (float)animFrameW_ : 1.f;
+        float destW = (float)((double)animSrcW_ * z);
+        float destH = destW * aspect;
+        float cx = ac.x + offset_.x;
+        float cy = ac.y + offset_.y;
+        D2D1_RECT_F dest = D2D1::RectF(cx - destW * 0.5f, cy - destH * 0.5f, cx + destW * 0.5f,
+                                       cy + destH * 0.5f);
+        rt_->SetTransform(D2D1::Matrix3x2F::Identity());
+        rt_->DrawBitmap(animBmps_[animFrame_].Get(), dest, 1.0f, InterpFor(z), nullptr);
+        return;
+    }
 
     if (!e || !e->bmp) {
         // 空状态 / 载入中
@@ -1593,6 +1727,23 @@ void App::Paint() {
                     Sleep(25);
                     while (PeekMessageW(&m, hwnd_, WM_APP_DECODED, WM_APP_DECODED, PM_REMOVE))
                         OnDecodedReady();
+                    while (PeekMessageW(&m, hwnd_, WM_TIMER, WM_TIMER, PM_REMOVE)) {
+                        DispatchMessageW(&m);  // 让动图定时器在截图前也能推进
+                    }
+                }
+                // 再让定时器/动图跑一小会儿，截图更接近真实状态
+                ULONGLONG settle = GetTickCount64() + 400;
+                MSG m2;
+                while (GetTickCount64() < settle) {
+                    while (PeekMessageW(&m2, nullptr, 0, 0, PM_REMOVE)) {
+                        if (m2.message == WM_APP_DECODED) {
+                            OnDecodedReady();
+                        } else {
+                            TranslateMessage(&m2);
+                            DispatchMessageW(&m2);
+                        }
+                    }
+                    Sleep(10);
                 }
                 RenderAndBlit();
             }
@@ -1812,6 +1963,13 @@ void App::DrawInfoPill() {
         info += L"  ·  ";
         info += i18n::T(i18n::kRawPreview);
     }
+    if (animBmps_.size() >= 2 && animIndex_ == curIndex_) {  // 动图：标出帧数与播放状态
+        wchar_t animBuf[64];
+        swprintf_s(animBuf, L"%s %zu%s", i18n::T(i18n::kAnimTag), animBmps_.size(),
+                   animPlaying_ ? L"" : L" ⏸");
+        info += L"  ·  ";
+        info += animBuf;
+    }
 
     wchar_t idxBuf[64];
     swprintf_s(idxBuf, L"%u / %zu", curIndex_ + 1, loader_.FileCount());
@@ -1828,7 +1986,7 @@ void App::DrawInfoPill() {
     const float py = h - StripHeight() - 14 * s - pillH;
 
     D2D1_RECT_F pill = D2D1::RectF(px, py, px + pillW, py + pillH);
-    FillRoundRect(pill, pillH * 0.5f, Brush(D2D1::ColorF(0x1B1E23, 0.9f)));
+    FillRoundRect(pill, pillH * 0.5f, Brush(D2D1::ColorF(0x1B1E23, 0.94f)));
     Text(info, px + padX, py, wInfo + 2 * s, pillH, textSize, Brush(kColorText2));
     Text(idx, px + padX + wInfo + gap, py, wIdx + 2 * s, pillH, textSize, Brush(kColorText3), 0);
 }
@@ -2328,7 +2486,7 @@ void App::DrawSettingsPanel() {
             yy += h;
         }
     } else {
-        Text(std::wstring(i18n::T(i18n::kAppName)) + L" · " + i18n::T(i18n::kVersion) + L" 0.3.2",
+        Text(std::wstring(i18n::T(i18n::kAppName)) + L" · " + i18n::T(i18n::kVersion) + L" 0.4.0",
              x0, yy, cw, 28 * s, 14 * s, Brush(kColorText));
         yy += 30 * s;
         Text(i18n::T(i18n::kAboutTagline), x0, yy, cw, 22 * s, 12 * s, Brush(kColorText2));

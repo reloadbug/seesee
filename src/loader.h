@@ -10,6 +10,8 @@
 #include <wincodec.h>
 #include <wrl/client.h>
 
+#include "animdecode.h"
+
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -75,7 +77,11 @@ public:
     void Request(uint32_t index, int level, int priority);
     void ClearQueue();
 
+    // 动图：解码全部帧（GIF / 动画 WebP）；结果走 SetAnimSink
+    void RequestAnimation(uint32_t index, uint32_t fitW, uint32_t fitH, int priority = 0);
+
     void SetSink(std::function<void(std::shared_ptr<DecodedImage>)> sink);
+    void SetAnimSink(std::function<void(std::shared_ptr<AnimationData>)> sink);
 
     static void Decode(uint32_t index, const std::wstring& path, int level,
                        uint32_t fitW, uint32_t fitH, DecodedImage& out);
@@ -86,6 +92,8 @@ private:
         int level = kLevelFit;
         int prio = 0;
         uint64_t seq = 0;
+        bool anim = false;  // 动图任务（level 无意义）
+        uint32_t animFitW = 0, animFitH = 0;  // 动图解码目标尺寸（0 = 原始）
     };
 
     void WorkerLoop();
@@ -101,5 +109,6 @@ private:
     std::atomic<uint32_t> fitW_{1920};
     std::atomic<uint32_t> fitH_{1080};
     std::function<void(std::shared_ptr<DecodedImage>)> sink_;
+    std::function<void(std::shared_ptr<AnimationData>)> animSink_;
     uint64_t seq_ = 0;
 };

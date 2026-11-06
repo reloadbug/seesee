@@ -188,6 +188,14 @@ private:
     void ImportRegFile();             // 直接调系统合并 .reg（系统自己确认）
     void RegisterAsDefault();         // 注册 + 引导（不弹自家对话框）
 
+    // 动图（GIF / 动画 WebP）
+    void OnAnimationReady();          // 上传动图帧到 D2D 位图
+    void ClearAnimation();            // 换图/关闭时清空
+    void StartAnimPlayback();         // 启动帧定时器
+    void AdvanceAnimFrame();          // 推进一帧并把定时器重排到下一帧的延时
+    bool AnimActive() const;          // 当前是否正在显示动图
+    void ToggleAnimPlay();            // 播放/暂停
+
     // ---- 状态 ----
     HINSTANCE hinst_ = nullptr;
     HWND hwnd_ = nullptr;
@@ -222,6 +230,18 @@ private:
     bool haveImage_ = false;
     bool loading_ = false;
     std::wstring errorText_;
+
+    // 动图状态
+    std::vector<std::shared_ptr<AnimationData>> pendingAnim_;
+    std::vector<ComPtr<ID2D1Bitmap>> animBmps_;
+    std::vector<int> animDelays_;
+    uint32_t animIndex_ = 0xFFFFFFFFu;  // 已加载动画对应的文件索引
+    uint32_t animSrcW_ = 0, animSrcH_ = 0;
+    uint32_t animFrameW_ = 0, animFrameH_ = 0;
+    size_t animFrame_ = 0;
+    bool animPlaying_ = true;
+    bool animRequested_ = false;  // 当前这张已发过动图请求
+    bool animTimerOn_ = false;
 
     ZoomMode zoomMode_ = ZoomMode::Fit;
     double zoom_ = 1.0;

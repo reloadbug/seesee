@@ -15,6 +15,7 @@ const wchar_t* const kIds[kCount] = {
     L"Actual", L"Fullscreen", L"Open", L"DefaultApp", L"Strip",  L"Settings",
     L"UiScaleUp", L"UiScaleDown",
     L"CopyImage", L"CopyFile", L"CutFile", L"CopyPath", L"Reveal", L"Edit", L"Delete",
+    L"PlayPause",
 };
 
 const i18n::Str kLabels[kCount] = {
@@ -24,6 +25,7 @@ const i18n::Str kLabels[kCount] = {
     i18n::kCmdSettings, i18n::kCmdUiScaleUp, i18n::kCmdUiScaleDown,
     i18n::kCmdCopyImage, i18n::kCmdCopyFile, i18n::kCmdCutFile, i18n::kCmdCopyPath,
     i18n::kCmdReveal, i18n::kCmdEdit, i18n::kCmdDelete,
+    i18n::kCmdPlayPause,
 };
 
 Chord Make(UINT vk, bool ctrl = false, bool shift = false, bool alt = false) {
@@ -126,6 +128,7 @@ std::vector<Chord> Defaults(Cmd c) {
         case kReveal: v = {Make('E', true, true)}; break;
         case kEdit: v = {Make('E', true)}; break;
         case kDelete: v = {Make(VK_DELETE)}; break;
+        case kPlayPause: v = {Make(VK_SPACE)}; break;
         default: break;
     }
     return v;

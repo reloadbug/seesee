@@ -300,6 +300,32 @@ void Loader::Request(uint32_t index, int level, int priority) {
     cv_.notify_one();
 }
 
+void Loader::RequestAnimation(uint32_t index, uint32_t fitW, uint32_t fitH, int priority) {
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (files_.empty() || index >= files_.size()) return;
+        for (const auto& t : queue_) {
+            if (t.anim && t.index == index) return;
+        }
+        Task t;
+        t.index = index;
+        t.level = -1;  // 动图任务不用档位
+        t.prio = priority;
+        t.seq = ++seq_;
+        t.anim = true;
+        t.animFitW = fitW;
+        t.animFitH = fitH;
+        if (priority == 0) {
+            queue_.push_front(t);
+        } else {
+            auto it = queue_.begin();
+            while (it != queue_.end() && it->prio <= priority) ++it;
+            queue_.insert(it, t);
+        }
+    }
+    cv_.notify_one();
+}
+
 void Loader::ClearQueue() {
     std::lock_guard<std::mutex> lk(mtx_);
     queue_.clear();
@@ -307,6 +333,10 @@ void Loader::ClearQueue() {
 
 void Loader::SetSink(std::function<void(std::shared_ptr<DecodedImage>)> sink) {
     sink_ = std::move(sink);
+}
+
+void Loader::SetAnimSink(std::function<void(std::shared_ptr<AnimationData>)> sink) {
+    animSink_ = std::move(sink);
 }
 
 void Loader::WorkerLoop() {
@@ -320,6 +350,19 @@ void Loader::WorkerLoop() {
             task = queue_.front();
             queue_.pop_front();
             if (!WantedLocked(task.index)) continue;
+        }
+
+        if (task.anim) {
+            auto anim = std::make_shared<AnimationData>();
+            anim->index = task.index;
+            DecodeAnimation(ThreadFactory(), PathAt(task.index),
+                            task.animFitW ? task.animFitW : fitW_.load(),
+                            task.animFitH ? task.animFitH : fitH_.load(), *anim);
+            if (animSink_) {
+                if (stop_) return;
+                animSink_(std::move(anim));
+            }
+            continue;
         }
 
         auto result = std::make_shared<DecodedImage>();
