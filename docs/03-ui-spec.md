@@ -181,7 +181,7 @@
 | 键帽 | 高 24，宽 = 文本宽 + 20，底 `#24282F`；捕获态 accent 描边 |
 | 滚动条 | 宽 3，`#FFFFFF` @0.16，仅内容溢出时出现 |
 
-- **通用**：语言三选一（跟随系统 / 中文 / English）、界面缩放 `[−] 100% [+] [重置]`、开关（底部胶片条 / 控件自动隐藏 / 滚轮翻页 / 小图放大到窗口）、「设为默认看图工具」主按钮。
+- **通用**：语言三选一（跟随系统 / 中文 / English）、界面缩放 `[−] 100% [+] [重置]`、开关（底部胶片条 / 控件自动隐藏 / 滚轮翻页 / 小图放大到窗口）、**文件关联**区（状态行三态 + 「一键关联所有图片类型」主按钮 + 条件出现的「打开系统设置」/「取消关联」次按钮，见 §13）。
 - **快捷键**：22 行「命令名 + 键帽」，点键帽进入捕获态（面板独占键盘，显示「请按新按键…」）；`Esc` 取消、`Delete`/`Backspace` 解绑；新键与其它命令冲突时自动解绑对方并用 toast（4 s）提示「该键已用于「上一张」」。页脚固定显示 `Esc`/`Delete` 提示与「恢复默认」，不随列表滚动。
 - **关于**：`看看 · 版本`、一句话定位、技术栈、性能实测、仓库地址（accent 色）、MIT。
 - 切换语言/开关即时生效并写 `settings.ini`，无需重启。
@@ -201,12 +201,16 @@
 - 无图时所有依赖当前文件的项 `MF_GRAYED`。
 - 实现要点：复制图片 = 全尺寸解码 → 反乘 alpha → `CF_DIBV5`（带 alpha mask）；复制 / 剪切文件 = `CF_HDROP` + `Preferred DropEffect`（剪切后到资源管理器粘贴即移动）；移到回收站 = `SHFileOperationW(FOF_ALLOWUNDO | FOF_WANTNUKEWARNING)`，确认交给系统，删完自动重扫目录并停在相邻位置。
 
-## 13. 关联引导（不弹自家对话框，v0.3.1）
+## 13. 文件关联（不弹自家对话框）
 
-- 原则：`Ctrl+D`、面板主按钮、菜单项统一走 `App::RegisterAsDefault()`，**不再使用 `MessageBox`**。
-- 成功：写 HKCU（ProgID + OpenWithProgids + Capabilities + RegisteredApplications）→ `SHChangeNotify` → 直接打开系统「默认应用」（`ms-settings:defaultapps?registeredAppUser=SeeSee`），toast「已注册，请在系统「默认应用」里确认」，并自动打开设置面板。
-- 失败（注册表被安全软件拦截）：把生成的 `seesee-assoc.reg` 路径记入 `lastRegFile_`、`regBlocked_ = true`，打开设置面板→通用页，在「设为默认看图工具」下方追加：引导文案（`kRegBlockedHint`）+ 「导入关联文件」主按钮（`ShellExecuteW` 打开 .reg，合并确认是系统行为）+ 「打开系统设置」次按钮。
-- 相关文案：`kRegBlockedHint` / `kImportRegFile` / `kOpenSystemSettings` / `kSetDefaultDone`。
+- 原则：`Ctrl+D`、面板按钮、右键菜单项统一走 `App::RegisterAsDefault()`，**不使用 `MessageBox`**。
+- **一键关联所有图片类型**（v0.4.1）：对全部 45 个支持格式，除了 ProgID + `OpenWithProgids` + `Capabilities\FileAssociations` + `RegisteredApplications` 之外，还写 `HKCU\Software\Classes\<ext>` 的**默认值** = `SeeSee.Image`。这是"点了就生效"的关键——没有这步，未被占用的类型仍会弹「打开方式」。
+  - 状态行三态：`已关联 %d / %d 种类型（其余需在系统「默认应用」里点一下）` / `已关联全部 %d 种类型 ✓`（accent 色）/ `尚未关联任何类型`。
+  - 按钮：`一键关联所有图片类型`（主）→ 成功后 toast「已关联 %d 种图片类型」并打开系统「默认应用」；部分类型被别的程序占用时追加 `打开系统设置`（次）；已关联时追加 `取消关联`（次，只撤指向我们的值，不动别人的）。
+- 限制：已被用户在「默认应用」里选过的类型由 Windows 的 `UserChoice` 哈希保护，任何程序都写不进去，只能引导用户点一下 —— 所以计数会停在 `25 / 45` 这种形态（本机 20 个类型被「照片」/豆包占用）。
+- 成功路径：`SHChangeNotify` → 打开 `ms-settings:defaultapps?registeredAppUser=SeeSee`。
+- 失败（注册表被安全软件拦截）：把生成的 `seesee-assoc.reg` 路径记入 `lastRegFile_`、`regBlocked_ = true`，打开设置面板→通用页，在关联区下方追加：引导文案（`kRegBlockedHint`）+ 「导入关联文件」主按钮（`ShellExecuteW` 打开 .reg，合并确认是系统行为）+ 「打开系统设置」次按钮。
+- 相关文案：`kAssocSection` / `kAssocAll` / `kAssocUnregister` / `kAssocStatus` / `kAssocDoneFmt` / `kAssocAllDone` / `kAssocNone` / `kRegBlockedHint` / `kImportRegFile` / `kOpenSystemSettings` / `kSetDefaultDone`。
 ## 14. 单反 RAW（v0.3.2）
 
 - 支持扩展名（29 种）：`cr2 cr3 crw nef nrw arw srf sr2 dng orf rw2 raf pef srw rwl 3fr fff iiq mos mrw x3f dcr kdc mef raw erf rwz gpr braw`。

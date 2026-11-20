@@ -3,11 +3,14 @@
 // 若注册表写入被安全软件/沙箱拒绝，则退化为生成一个 .reg 文件供用户双击导入。
 #include "assoc.h"
 
+#include "loader.h"  // 支持格式表（唯一来源）
+
 #include <windows.h>
 #include <shlobj.h>
 #include <shellapi.h>
 #include <winreg.h>
 
+#include <cwchar>
 #include <iterator>
 #include <vector>
 
@@ -93,8 +96,12 @@ std::vector<Entry> BuildEntries() {
     v.push_back({progId + L"\\Application", L"ApplicationDescription",
                  L"极速看图 — 毫秒级打开，键盘翻页"});
 
-    for (const auto& ext : Extensions())
+    for (const auto& ext : Extensions()) {
+        // ① 默认值直接指向本程序：没有 UserChoice 的类型立刻生效
+        v.push_back({kClasses + ext, L"", kProgId});
+        // ② 「打开方式」候选列表
         v.push_back({kClasses + ext + L"\\OpenWithProgids", kProgId, L""});
+    }
 
     // 「默认应用」页面登记
     v.push_back({kCaps, L"ApplicationName", L"看看 SeeSee"});
@@ -117,17 +124,12 @@ std::wstring ExePath() {
 }
 
 const std::vector<std::wstring>& Extensions() {
-    static const std::vector<std::wstring> exts = {
-        L".jpg", L".jpeg", L".jpe", L".jfif",  L".png",  L".bmp",  L".gif", L".tif",
-        L".tiff", L".ico", L".webp", L".avif", L".heic", L".heif", L".jxl",
-        // 单反 / 微单 RAW
-        L".cr2", L".cr3", L".crw", L".nef", L".nrw", L".arw", L".srf", L".sr2",
-        L".dng", L".orf", L".rw2", L".raf", L".pef", L".srw", L".rwl", L".3fr",
-        L".fff", L".iiq", L".mos", L".mrw", L".x3f", L".dcr", L".kdc", L".mef",
-        L".raw", L".erf", L".rwz", L".gpr", L".braw",
-    };
+    // 唯一来源：loader 的支持格式表（新加格式自动纳入关联，不会漏）
+    static const std::vector<std::wstring> exts = ::SupportedExtensions();
     return exts;
 }
+
+int ExtensionCount() { return static_cast<int>(Extensions().size()); }
 
 bool Register(std::wstring* fallbackRegFile) {
     if (fallbackRegFile) fallbackRegFile->clear();
@@ -170,10 +172,70 @@ bool Register(std::wstring* fallbackRegFile) {
     return false;
 }
 
+bool RegisterAll(std::wstring* fallbackRegFile, int* outTypes) {
+    const bool ok = Register(fallbackRegFile);
+    if (outTypes) *outTypes = ok ? ExtensionCount() : 0;
+    if (ok) SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+    return ok;
+}
+
+int AssociatedCount() {
+    int n = 0;
+    for (const auto& ext : Extensions()) {
+        // ① 用户已经在「默认应用」里选过：UserChoice 说了算
+        bool taken = false;
+        {
+            const std::wstring uc = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\"
+                                    L"FileExts\\" + ext + L"\\UserChoice";
+            HKEY key = nullptr;
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, uc.c_str(), 0, KEY_QUERY_VALUE, &key) ==
+                ERROR_SUCCESS) {
+                wchar_t buf[512];
+                DWORD cb = sizeof(buf), type = 0;
+                if (RegQueryValueExW(key, L"ProgId", nullptr, &type, reinterpret_cast<BYTE*>(buf),
+                                     &cb) == ERROR_SUCCESS &&
+                    type == REG_SZ) {
+                    taken = true;
+                    if (_wcsicmp(buf, kProgId) == 0) ++n;
+                }
+                RegCloseKey(key);
+            }
+        }
+        if (taken) continue;
+        // ② 没有 UserChoice：看我们在 HKCU\Software\Classes\<ext> 写的默认值
+        HKEY key = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, (kClasses + ext).c_str(), 0, KEY_QUERY_VALUE, &key) ==
+            ERROR_SUCCESS) {
+            wchar_t buf[512];
+            DWORD cb = sizeof(buf), type = 0;
+            if (RegQueryValueExW(key, nullptr, nullptr, &type, reinterpret_cast<BYTE*>(buf), &cb) ==
+                    ERROR_SUCCESS &&
+                type == REG_SZ && _wcsicmp(buf, kProgId) == 0) {
+                ++n;
+            }
+            RegCloseKey(key);
+        }
+    }
+    return n;
+}
+
 bool Unregister() {
     bool ok = true;
     ok &= RegDeleteTreeW(HKEY_CURRENT_USER, (kClasses + kProgId).c_str()) == ERROR_SUCCESS;
     for (const auto& ext : Extensions()) {
+        // 撤掉我们写下的 .ext 默认值（只撤指向我们的，别动别人的）
+        HKEY ek = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, (kClasses + ext).c_str(), 0,
+                          KEY_QUERY_VALUE | KEY_SET_VALUE, &ek) == ERROR_SUCCESS) {
+            wchar_t buf[512];
+            DWORD cb = sizeof(buf), type = 0;
+            if (RegQueryValueExW(ek, nullptr, nullptr, &type, reinterpret_cast<BYTE*>(buf), &cb) ==
+                    ERROR_SUCCESS &&
+                type == REG_SZ && _wcsicmp(buf, kProgId) == 0) {
+                RegDeleteValueW(ek, nullptr);
+            }
+            RegCloseKey(ek);
+        }
         HKEY key = nullptr;
         if (RegOpenKeyExW(HKEY_CURRENT_USER, (kClasses + ext + L"\\OpenWithProgids").c_str(), 0,
                           KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
@@ -230,19 +292,35 @@ bool OpenDefaultAppsSettings() {
 }
 
 int RunRegisterCommand(bool unregisterInstead, bool openSettings) {
-    if (unregisterInstead) return Unregister() ? 0 : 1;
+    if (unregisterInstead) {
+        const bool okU = Unregister();
+        if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+            FILE* f = nullptr;
+            if (_wfopen_s(&f, L"CONOUT$", L"w") == 0 && f) {
+                fwprintf(f, L"[seesee] 已取消关联。\n");
+                fclose(f);
+            }
+            FreeConsole();
+        }
+        return okU ? 0 : 1;
+    }
 
     std::wstring regFile;
-    bool ok = Register(&regFile);
+    int types = 0;
+    const bool ok = RegisterAll(&regFile, &types);
+    const int live = ok ? AssociatedCount() : 0;
     if (ok && openSettings) OpenDefaultAppsSettings();
 
     // 有 console（被 cmd 调用）时也能看到结果
     if (AttachConsole(ATTACH_PARENT_PROCESS)) {
         FILE* f = nullptr;
         if (_wfopen_s(&f, L"CONOUT$", L"w") == 0 && f) {
-            fwprintf(f, ok ? L"[seesee] 已注册为候选看图工具。\n"
-                           : L"[seesee] 注册表写入被拒绝，已生成: %s\n",
-                     regFile.c_str());
+            if (ok) {
+                fwprintf(f, L"[seesee] 已关联 %d 种图片类型（其中 %d 种当前直接生效，其余需在「默认应用」确认）\n",
+                         types, live);
+            } else {
+                fwprintf(f, L"[seesee] 注册表写入被拒绝，已生成: %ls\n", regFile.c_str());
+            }
             fclose(f);
         }
         FreeConsole();

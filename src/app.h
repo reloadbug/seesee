@@ -71,6 +71,7 @@ private:
         kSetRegister,
         kSetImportReg,
         kSetOpenApps,
+        kSetUnregister,
         kSetKeysReset,
         kSetKeyBase = 400,  // kSetKeyBase + keys::Cmd
 
@@ -186,7 +187,9 @@ private:
     void DeleteCurrentFile();         // 移到回收站
     void RescanAfterDelete();         // 删完重扫目录、停在相邻位置
     void ImportRegFile();             // 直接调系统合并 .reg（系统自己确认）
-    void RegisterAsDefault();         // 注册 + 引导（不弹自家对话框）
+    void RegisterAsDefault();         // 一键关联所有图片类型 + 引导（不弹自家对话框）
+    void RemoveAssociations();        // 取消关联（只撤指向我们的项）
+    void RefreshAssocStatus();        // 统计已关联的类型数（面板显示用）
 
     // 动图（GIF / 动画 WebP）
     void OnAnimationReady();          // 上传动图帧到 D2D 位图
@@ -278,6 +281,8 @@ private:
     int pendingLang_ = -1;             // --lang：截图用的临时语言覆盖
     std::wstring lastRegFile_;         // 注册被拒时生成的 .reg（面板里给"导入"入口）
     bool regBlocked_ = false;          // 上次注册是否被系统拦下
+    int assocCount_ = -1;              // 已关联的类型数（-1 = 还没统计）
+    int assocTotal_ = 0;               // 支持关联的类型总数
 
     std::vector<Hit> hits_;
 

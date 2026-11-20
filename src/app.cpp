@@ -640,13 +640,22 @@ void App::ImportRegFile() {
     if ((INT_PTR)r <= 32) ShowToast(i18n::T(i18n::kOpFailed));
 }
 
+void App::RefreshAssocStatus() {
+    assocTotal_ = assoc::ExtensionCount();
+    assocCount_ = assoc::AssociatedCount();
+}
+
 void App::RegisterAsDefault() {
     std::wstring regFile;
-    if (assoc::Register(&regFile)) {
+    int types = 0;
+    if (assoc::RegisterAll(&regFile, &types)) {
         lastRegFile_.clear();
         regBlocked_ = false;
-        assoc::OpenDefaultAppsSettings();  // 直接引导到系统「默认应用」
-        ShowToast(i18n::T(i18n::kSetDefaultDone));
+        RefreshAssocStatus();
+        assoc::OpenDefaultAppsSettings();  // 剩下被系统占用的类型，引导到「默认应用」
+        wchar_t buf[160];
+        swprintf_s(buf, i18n::T(i18n::kAssocDoneFmt), types);
+        ShowToast(buf);
         if (!settingsOpen_) ToggleSettings();
         return;
     }
@@ -657,6 +666,12 @@ void App::RegisterAsDefault() {
     settingsTab_ = 0;
     setScroll_ = 0.f;
     ShowToast(i18n::T(regFile.empty() ? i18n::kOpFailed : i18n::kRegBlockedHint));
+}
+
+void App::RemoveAssociations() {
+    const bool ok = assoc::Unregister();
+    RefreshAssocStatus();
+    ShowToast(i18n::T(ok ? i18n::kAssocNone : i18n::kOpFailed));
 }
 
 int App::ShowContextMenu() {
@@ -2103,6 +2118,7 @@ void App::ToggleSettings() {
         setScroll_ = 0.f;
         lastInputMs_ = NowMs();
         chromeAlpha_ = 1.f;
+        assocCount_ = -1;  // 下次画面板时重新统计关联状态
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -2240,6 +2256,7 @@ void App::OnPanelClick(int id) {
         case kSetRegister: RunCommand((int)keys::kDefaultApp); break;
         case kSetImportReg: ImportRegFile(); break;
         case kSetOpenApps: assoc::OpenDefaultAppsSettings(); break;
+        case kSetUnregister: RemoveAssociations(); break;
         case kSetKeysReset:
             keys::ResetAll();
             captureCmd_ = -1;
@@ -2437,7 +2454,26 @@ void App::DrawSettingsPanel() {
         toggleRow(i18n::kFitUpscale, cfg.fitUpscale, kSetTgUpscale);
 
         yy += 8 * s;
-        wideButton(i18n::kSetDefaultApp, kSetRegister, true);
+        section(i18n::kAssocSection);
+        if (assocCount_ < 0) RefreshAssocStatus();
+        {
+            wchar_t buf[160];
+            if (assocCount_ <= 0) {
+                Text(i18n::T(i18n::kAssocNone), x0, yy, cw, 22 * s, 10.5f * s,
+                     Brush(kColorText3));
+            } else if (assocCount_ >= assocTotal_ && assocTotal_ > 0) {
+                swprintf_s(buf, i18n::T(i18n::kAssocAllDone), assocTotal_);
+                Text(buf, x0, yy, cw, 22 * s, 10.5f * s, Brush(kColorAccent));
+            } else {
+                swprintf_s(buf, i18n::T(i18n::kAssocStatus), assocCount_, assocTotal_);
+                Text(buf, x0, yy, cw, 34 * s, 10.5f * s, Brush(kColorText3));
+            }
+            yy += (assocCount_ > 0 && assocCount_ < assocTotal_) ? 38 * s : 26 * s;
+        }
+        wideButton(i18n::kAssocAll, kSetRegister, true);
+        if (assocCount_ > 0 && assocCount_ < assocTotal_)
+            wideButton(i18n::kOpenSystemSettings, kSetOpenApps, false);  // 剩下的被别的程序占着
+        if (assocCount_ > 0) wideButton(i18n::kAssocUnregister, kSetUnregister, false);
         if (regBlocked_ && !lastRegFile_.empty()) {
             // 被系统/安全软件拦下时不再弹自家对话框：改成面板里的两步引导
             Text(i18n::T(i18n::kRegBlockedHint), x0, yy - 2 * s, cw, 30 * s, 10.5f * s,
@@ -2486,7 +2522,7 @@ void App::DrawSettingsPanel() {
             yy += h;
         }
     } else {
-        Text(std::wstring(i18n::T(i18n::kAppName)) + L" · " + i18n::T(i18n::kVersion) + L" 0.4.0",
+        Text(std::wstring(i18n::T(i18n::kAppName)) + L" · " + i18n::T(i18n::kVersion) + L" 0.4.1",
              x0, yy, cw, 28 * s, 14 * s, Brush(kColorText));
         yy += 30 * s;
         Text(i18n::T(i18n::kAboutTagline), x0, yy, cw, 22 * s, 12 * s, Brush(kColorText2));

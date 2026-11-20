@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(seesee VERSION 0.4.0 LANGUAGES CXX)
+project(seesee VERSION 0.4.1 LANGUAGES CXX)
 
 enable_language(RC)
 

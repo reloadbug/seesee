@@ -90,6 +90,14 @@ enum Str : int {
     kRawPreview,
     kAnimTag,      // 信息胶囊里的「动图」标记
 
+    kAssocSection,     // 设置面板：文件关联
+    kAssocAll,         // 一键关联所有图片类型
+    kAssocUnregister,  // 取消关联
+    kAssocStatus,      // 「已关联 %d / %d 种类型」
+    kAssocDoneFmt,     // 「已关联 %d 种图片类型」
+    kAssocAllDone,     // 「已关联全部 %d 种类型」
+    kAssocNone,        // 「尚未关联任何类型」
+
     kCount
 };
 

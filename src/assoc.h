@@ -16,9 +16,22 @@ std::wstring ExePath();
 // 支持关联的扩展名（带点）
 const std::vector<std::wstring>& Extensions();
 
+// 支持关联的扩展名数量
+int ExtensionCount();
+
 // 注册为候选看图工具（ProgID + OpenWithProgids + Capabilities + RegisteredApplications）
 // 失败时（例如被安全软件拦截）会生成一个 .reg 落到 fallbackRegFile 供用户双击导入。
 bool Register(std::wstring* fallbackRegFile = nullptr);
+
+// 一键关联所有图片类型：
+// 除 Register() 的内容外，还把 HKCU\Software\Classes\<ext> 的默认值直接指向本程序，
+// 这样尚未被其它程序占用的扩展名**立刻**用本程序打开（已被 UserChoice 占用的类型
+// 系统不允许程序修改，需要在「默认应用」里点一下）。
+// outTypes 返回写完的扩展名个数。
+bool RegisterAll(std::wstring* fallbackRegFile, int* outTypes = nullptr);
+
+// 当前有多少个支持的类型实际指向本程序（UserChoice 或 Classes\<ext> 默认值）
+int AssociatedCount();
 
 // 反向清理
 bool Unregister();

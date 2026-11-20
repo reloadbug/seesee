@@ -163,8 +163,23 @@ void ApplyOrientation(std::vector<uint8_t>& px, uint32_t& w, uint32_t& h, int or
 
 }  // namespace
 
-bool IsSupportedImageFile(const std::wstring& name) {
-    size_t dot = name.find_last_of(L'.');
+std::vector<std::wstring> SupportedExtensions() {
+    std::vector<std::wstring> v;
+    v.reserve(std::size(kExtensions));
+    for (auto* e : kExtensions) {
+        bool dup = false;
+        for (const auto& x : v) {
+            if (x == e) {
+                dup = true;
+                break;
+            }
+        }
+        if (!dup) v.emplace_back(e);
+    }
+    return v;
+}
+
+bool IsSupportedImageFile(const std::wstring& name) {    size_t dot = name.find_last_of(L'.');
     if (dot == std::wstring::npos) return false;
     std::wstring ext = name.substr(dot);
     for (auto& c : ext) c = Lower(c);

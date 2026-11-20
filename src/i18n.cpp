@@ -91,6 +91,15 @@ const Row kTable[] = {
     {kMenuExit, L"退出", L"Exit"},
     {kRawPreview, L"RAW 预览", L"RAW preview"},
     {kAnimTag, L"动图", L"Animated"},
+
+    {kAssocSection, L"文件关联", L"File associations"},
+    {kAssocAll, L"一键关联所有图片类型", L"Associate all image types"},
+    {kAssocUnregister, L"取消关联", L"Remove associations"},
+    {kAssocStatus, L"已关联 %d / %d 种类型（其余需在系统「默认应用」里点一下）",
+     L"%d of %d types associated (confirm the rest in Default apps)"},
+    {kAssocDoneFmt, L"已关联 %d 种图片类型", L"%d image types associated"},
+    {kAssocAllDone, L"已关联全部 %d 种类型 ✓", L"All %d types associated ✓"},
+    {kAssocNone, L"尚未关联任何类型", L"No types associated yet"},
 };
 
 int g_setting = 0;   // 0 = 跟随系统

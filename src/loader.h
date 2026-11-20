@@ -36,6 +36,9 @@ bool IsSupportedImageFile(const std::wstring& name);
 // 扫描目录，自然排序（IMG_2 < IMG_10），失败返回空
 std::vector<ImageFile> ScanImageFolder(const std::wstring& dirPath);
 
+// 全部受支持的扩展名（带点，去重，保持顺序）——关联注册与打开对话框共用这一份
+std::vector<std::wstring> SupportedExtensions();
+
 // 解码档位：适应窗口 / 原始分辨率 / 胶片条缩略图
 enum DecodeLevel : int { kLevelFit = 0, kLevelFull = 1, kLevelThumb = 2, kLevelCount = 3 };
 

@@ -29,6 +29,7 @@
 | **M6.6 右键菜单与图片操作** | 系统原生 TrackPopupMenu（菜单 id = 命令 + 1）、复制图片（CF_DIBV5）/ 复制·剪切文件（CF_HDROP + Preferred DropEffect）/ 复制路径 / 资源管理器定位 / 默认程序编辑 / 移到回收站（FOF_ALLOWUNDO）、关联被拦时改为面板内两步引导（不再弹 MessageBox） | ✅ 完成（v0.3.1） |
 | **M6.8 动图播放** | src/animdecode.cpp 逐帧合成（disposal / 逐帧区域 / 透明）、预乘双线性缩放、SetTimer 按帧延时推进；400 帧 / 160 MB 上限；`空格` 暂停；信息胶囊标注 `动图 N` | ✅ 完成（v0.4.0） |
 | **M6.7 单反 RAW 支持** | src/rawdecode.cpp 扫描文件内嵌 JPEG（SOI…EOI，按大小排序 + 逐个试解码跳过无损 raw 流），WIC 解不了就回退预览；29 种 RAW 扩展名；信息胶囊标注「RAW 预览」 | ✅ 完成（v0.3.2） |
+| **M6.9 一键关联所有图片类型** | 对 45 个格式补写 `HKCU\Software\Classes\<ext>` 默认值（点了就生效的关键）+ `OpenWithProgids`；`AssociatedCount()` 区分 UserChoice 占用与真正生效；设置面板「文件关联」区三态状态行 + 一键关联 / 打开系统设置 / 取消关联 | ✅ 完成（v0.4.1） |
 | **M7 v1.0 收尾** | 图标/清单/版本信息、异常与空目录态、README、安装说明、性能回归脚本、内存优化（后备缓冲与缓存预算） | ⏳ 进行中 |
 | **M8 v2 照片管理** | 目录树、标签评分、筛选、批量操作 | 🔭 规划中 |
 
